@@ -1,0 +1,52 @@
+/*
+ * Copyright (c) 2024 Hai Zhang <dreaming.in.code.zh@gmail.com>
+ * All Rights Reserved.
+ */
+
+package me.zhanghai.android.files.provider.mai70
+
+import me.zhanghai.android.files.provider.mai70.client.Authority
+import me.zhanghai.android.files.provider.mai70.client.Protocol
+import me.zhanghai.android.files.storage.Mai70Server
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Test
+import java.net.URI
+
+class Mai70ProviderTest {
+
+    @Test
+    fun testProtocolSchemeAndPort() {
+        assertEquals("mai70", Protocol.MAI70.scheme)
+        assertEquals(80, Protocol.MAI70.defaultPort)
+        assertEquals(Protocol.MAI70, Protocol.fromScheme("mai70"))
+        assertEquals(Protocol.MAI70, Protocol.fromScheme("MAI70"))
+    }
+
+    @Test
+    fun testAuthorityUriFormat() {
+        val authority = Authority(Protocol.MAI70, "192.168.0.1", 80, "")
+        assertEquals("192.168.0.1", authority.toUriAuthority().toString())
+
+        val authorityWithPortAndToken = Authority(Protocol.MAI70, "192.168.0.1", 8080, "abcdef123456")
+        assertEquals("abcdef123456@192.168.0.1:8080", authorityWithPortAndToken.toUriAuthority().toString())
+    }
+
+    @Test
+    fun testFileSystemProviderGetPath() {
+        val uri = URI.create("mai70://192.168.0.1/Normal/test.mp4")
+        val path = Mai70FileSystemProvider.getPath(uri)
+        assertNotNull(path)
+        assertEquals("mai70", path.fileSystem.provider().scheme)
+        assertEquals("/Normal/test.mp4", path.toString())
+    }
+
+    @Test
+    fun testMai70ServerCreation() {
+        val authority = Authority(Protocol.MAI70, "192.168.0.1", 80, "testtoken")
+        val server = Mai70Server(1L, "My Dashcam", authority, "Normal")
+        assertEquals("My Dashcam", server.customName)
+        assertEquals(authority, server.authority)
+        assertEquals("Normal", server.relativePath)
+    }
+}

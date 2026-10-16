@@ -17,6 +17,7 @@ import me.zhanghai.android.files.provider.ftp.FtpesFileSystemProvider
 import me.zhanghai.android.files.provider.ftp.FtpsFileSystemProvider
 import me.zhanghai.android.files.provider.linux.LinuxFileSystemProvider
 import me.zhanghai.android.files.provider.root.isRunningAsRoot
+import me.zhanghai.android.files.provider.mai70.Mai70FileSystemProvider
 import me.zhanghai.android.files.provider.sftp.SftpFileSystemProvider
 import me.zhanghai.android.files.provider.smb.SmbFileSystemProvider
 import me.zhanghai.android.files.provider.webdav.WebDavFileSystemProvider
@@ -42,6 +43,7 @@ object FileSystemProviders {
             FileSystemProvider.installProvider(FtpFileSystemProvider)
             FileSystemProvider.installProvider(FtpsFileSystemProvider)
             FileSystemProvider.installProvider(FtpesFileSystemProvider)
+            FileSystemProvider.installProvider(Mai70FileSystemProvider)
             FileSystemProvider.installProvider(SftpFileSystemProvider)
             FileSystemProvider.installProvider(SmbFileSystemProvider)
             FileSystemProvider.installProvider(WebDavFileSystemProvider)
