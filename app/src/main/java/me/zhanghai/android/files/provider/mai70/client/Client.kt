@@ -7,13 +7,13 @@ package me.zhanghai.android.files.provider.mai70.client
 
 import java8.nio.channels.SeekableByteChannel
 import me.zhanghai.android.files.provider.common.LocalWatchService
-import okhttp3.HttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
 import java.io.InputStream
+import java.math.BigInteger
 import java.security.MessageDigest
 import java.time.Instant
 import java.time.format.DateTimeFormatter
@@ -24,7 +24,11 @@ object Client {
     @Volatile
     lateinit var authenticator: Authenticator
 
-    val httpClient: OkHttpClient = OkHttpClient.Builder().build()
+    val httpClient: OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+        .writeTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
+        .build()
 
     val CATEGORY_NAMES = mapOf(
         0 to "Normal",
@@ -49,112 +53,156 @@ object Client {
         val size: Long
     )
 
-    private fun md5(input: String): String {
-        val bytes = MessageDigest.getInstance("MD5").digest(input.toByteArray(Charsets.UTF_8))
-        return bytes.joinToString("") { "%02x".format(it) }
+    fun calculateMD5(input: String): String {
+        val md = MessageDigest.getInstance("MD5")
+        val digest = md.digest(input.toByteArray(Charsets.UTF_8))
+        return BigInteger(1, digest).toString(16).padStart(32, '0')
     }
 
-    private fun signParams(command: String, rawParams: Map<String, String>, token: String): Map<String, String> {
-        val params = LinkedHashMap<String, String>()
-        for ((key, value) in rawParams) {
-            val paramKey = if (key.startsWith("-")) key else "-$key"
-            params[paramKey] = value
-        }
-        params["-timestamp"] = (System.currentTimeMillis() / 1000).toString()
-
-        val paramsStr = params.entries.joinToString("&") { "${it.key}=${it.value}" }
-        val hashStr = "$command?$paramsStr$token"
-        params["-signkey"] = md5(hashStr)
-
-        return params
-    }
+    fun generateSignKey(urlQuery: String, token: String): String =
+        calculateMD5(urlQuery + token)
 
     @Throws(IOException::class)
-    fun sendCgiCommand(authority: Authority, command: String, rawParams: Map<String, String> = emptyMap()): Any? {
-        val token = authenticator.getToken(authority) ?: authority.token
-        val signedParams = signParams(command, rawParams, token)
-
-        val urlBuilder = HttpUrl.Builder()
-            .scheme("http")
-            .host(authority.host)
-            .port(authority.port)
-            .addPathSegment("cgi-bin")
-            .addPathSegment(command)
-
-        for ((k, v) in signedParams) {
-            urlBuilder.addQueryParameter(k, v)
+    fun executeRawRequest(url: String): String? {
+        val request = Request.Builder().url(url).build()
+        httpClient.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                return null
+            }
+            var text = response.body.string()
+            if (text.contains(",\n]}")) {
+                text = text.replace(",\n]}", "]} ")
+            } else if (text.contains(",]}")) {
+                text = text.replace(",]}", "]} ")
+            }
+            return text
         }
-
-        val request = Request.Builder().url(urlBuilder.build()).build()
-        val response = httpClient.newCall(request).execute()
-        if (!response.isSuccessful) {
-            response.close()
-            throw IOException("HTTP error ${response.code}: ${response.message}")
-        }
-
-        var responseText = response.body.string()
-        // Fix potential trailing comma before ]} in 70mai JSON responses
-        if (responseText.contains(",\n]}")) {
-            responseText = responseText.replace(",\n]}", "]} ")
-        } else if (responseText.contains(",]}")) {
-            responseText = responseText.replace(",]}", "]} ")
-        }
-
-        val json = try {
-            JSONObject(responseText)
-        } catch (e: Exception) {
-            throw IOException("Invalid JSON response from 70mai: $responseText", e)
-        }
-
-        val resultCode = json.optString("ResultCode", "-1")
-        if (resultCode != "0") {
-            throw IOException("70mai command $command failed with ResultCode: $resultCode")
-        }
-
-        if (json.isNull("Result")) {
-            return null
-        }
-
-        val resultObj = json.get("Result")
-        return resultObj
     }
 
     @Throws(IOException::class)
     fun getFileCounts(authority: Authority): Map<Int, Int> {
-        val result = sendCgiCommand(authority, "getfilecount.cgi")
+        val token = authenticator.getToken(authority) ?: authority.token
+        val timestamp = System.currentTimeMillis() / 1000L
+        val queryPath = "getfilecount.cgi?"
+        val queryParams = "-timestamp=$timestamp"
+        val sign = generateSignKey(queryPath + queryParams, token)
+        val url = "http://${authority.host}:${authority.port}/cgi-bin/$queryPath$queryParams&-signkey=$sign"
+
+        val responseText = executeRawRequest(url) ?: return emptyMap()
         val counts = mutableMapOf<Int, Int>()
-        if (result is JSONArray) {
-            for (i in 0 until result.length()) {
-                val item = result.getJSONObject(i)
-                val type = item.getString("type").toIntOrNull()
-                val count = item.getString("count").toIntOrNull()
-                if (type != null && count != null) {
-                    counts[type] = count
+        try {
+            val json = JSONObject(responseText)
+            val resultCode = json.optString("ResultCode", "-1")
+            if (resultCode == "0" && !json.isNull("Result")) {
+                val result = json.getJSONArray("Result")
+                for (i in 0 until result.length()) {
+                    val item = result.getJSONObject(i)
+                    val type = item.optString("type").toIntOrNull()
+                    val count = item.optString("count").toIntOrNull()
+                    if (type != null && count != null) {
+                        counts[type] = count
+                    }
                 }
             }
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
         return counts
     }
 
     @Throws(IOException::class)
-    fun getFileEntries(authority: Authority, type: Int, count: Int): List<FileEntry> {
-        if (count <= 0) return emptyList()
-        val params = mapOf("type" to type.toString(), "start" to "1", "end" to count.toString())
-        val result = sendCgiCommand(authority, "getfilelist.cgi", params)
-        val entries = mutableListOf<FileEntry>()
-        if (result is JSONArray) {
+    fun getFileEntries(authority: Authority, type: Int): List<FileEntry> {
+        val token = authenticator.getToken(authority) ?: authority.token
+        val allEntries = mutableListOf<FileEntry>()
+        var startIndex = 0
+        val pageSize = 100
+
+        while (true) {
+            val timestamp = System.currentTimeMillis() / 1000L
+            val queryPath = "getfilelist.cgi?"
+            val queryParams = "-start=$startIndex&-end=${startIndex + pageSize - 1}&-type=$type&-timestamp=$timestamp"
+            val sign = generateSignKey(queryPath + queryParams, token)
+            var url = "http://${authority.host}:${authority.port}/cgi-bin/$queryPath$queryParams&-signkey=$sign"
+
+            var responseText = executeRawRequest(url)
+            var batch = parseFileEntriesResponse(responseText)
+
+            // If Result is empty or failed on first page, try fallback query formats
+            if ((batch == null || batch.isEmpty()) && startIndex == 0) {
+                val fallbackFormats = listOf(0, 1, 2, 3)
+                for (format in fallbackFormats) {
+                    val altTimestamp = System.currentTimeMillis() / 1000L
+                    val altUrl = when (format) {
+                        0 -> {
+                            val qp = "-start=0&-end=${pageSize - 1}&-type=$type&-timestamp=$altTimestamp"
+                            val s = generateSignKey("getfilelist.cgi?" + qp, token)
+                            "http://${authority.host}:${authority.port}/cgi-bin/getfilelist.cgi?$qp&-signkey=$s"
+                        }
+                        1 -> {
+                            val qp = "-start=0&-end=${pageSize - 1}&-timestamp=$altTimestamp"
+                            val s = generateSignKey("getfilelist.cgi?" + qp, token)
+                            "http://${authority.host}:${authority.port}/cgi-bin/getfilelist.cgi?$qp&-signkey=$s"
+                        }
+                        2 -> {
+                            val qp = "start=0&end=${pageSize - 1}&type=$type&timestamp=$altTimestamp"
+                            val s = generateSignKey("getfilelist.cgi?" + qp, token)
+                            "http://${authority.host}:${authority.port}/cgi-bin/getfilelist.cgi?$qp&signkey=$s"
+                        }
+                        3 -> {
+                            val qp = "-start=1&-end=$pageSize&-type=$type&-timestamp=$altTimestamp"
+                            val s = generateSignKey("getfilelist.cgi?" + qp, token)
+                            "http://${authority.host}:${authority.port}/cgi-bin/getfilelist.cgi?$qp&-signkey=$s"
+                        }
+                        else -> continue
+                    }
+
+                    val altText = executeRawRequest(altUrl) ?: continue
+                    val altBatch = parseFileEntriesResponse(altText)
+                    if (altBatch != null && altBatch.isNotEmpty()) {
+                        batch = altBatch
+                        responseText = altText
+                        break
+                    }
+                }
+            }
+
+            if (batch == null || batch.isEmpty()) {
+                break
+            }
+
+            allEntries.addAll(batch)
+            if (batch.size < pageSize) {
+                break
+            }
+
+            startIndex += pageSize
+        }
+
+        return allEntries
+    }
+
+    private fun parseFileEntriesResponse(responseText: String?): List<FileEntry>? {
+        if (responseText.isNullOrEmpty()) return null
+        return try {
+            val json = JSONObject(responseText)
+            val resultCode = json.optString("ResultCode", "-1")
+            if (resultCode != "0" || json.isNull("Result")) return null
+            val result = json.getJSONArray("Result")
+            val entries = mutableListOf<FileEntry>()
             for (i in 0 until result.length()) {
                 val item = result.getJSONObject(i)
-                val path = item.getString("path")
-                val name = item.getString("name")
-                var size = item.getString("size").toLongOrNull() ?: 0L
-                if (size <= 0) {
+                val path = item.optString("path")
+                val name = item.optString("name")
+                var size = item.optString("size").toLongOrNull() ?: 0L
+                if (size < 0) {
                     size += (4L * 1024 * 1024 * 1024)
                 }
                 entries.add(FileEntry(path, name, size))
             }
+            entries
+        } catch (e: Exception) {
+            null
         }
-        return entries
     }
 
     @Throws(IOException::class)
@@ -183,13 +231,7 @@ object Client {
             val categoryName = segments[0]
             val type = CATEGORY_TYPES[categoryName.lowercase(Locale.ROOT)]
                 ?: throw IOException("Unknown category directory: $categoryName")
-            val counts = try {
-                getFileCounts(authority)
-            } catch (e: Exception) {
-                emptyMap()
-            }
-            val count = counts[type] ?: 1000
-            val fileEntries = getFileEntries(authority, type, count)
+            val fileEntries = getFileEntries(authority, type)
             return fileEntries.map { entry ->
                 path.resolve(entry.name)
             }
@@ -208,12 +250,42 @@ object Client {
         }
 
         val fileUrl = "http://${path.authority.host}:${path.authority.port}/${remotePath.removePrefix("/")}"
-        val request = Request.Builder().url(fileUrl).head().build()
+
+        // Try HEAD first, with GET Range fallback if HEAD is unsupported by dashcam server
+        try {
+            val request = Request.Builder().url(fileUrl).head().build()
+            httpClient.newCall(request).execute().use { response ->
+                if (response.isSuccessful) {
+                    val size = response.header("Content-Length")?.toLongOrNull() ?: 0L
+                    val lastModifiedHeader = response.header("Last-Modified")
+                    val lastModifiedTime = if (lastModifiedHeader != null) {
+                        try {
+                            DateTimeFormatter.RFC_1123_DATE_TIME.parse(lastModifiedHeader, Instant::from)
+                        } catch (e: Exception) {
+                            Instant.EPOCH
+                        }
+                    } else {
+                        Instant.EPOCH
+                    }
+                    return Mai70FileInfo(isDirectory = false, size = size, lastModifiedTime = lastModifiedTime)
+                }
+            }
+        } catch (e: Exception) {
+            // Ignored, proceed to GET fallback
+        }
+
+        // Fallback: GET with Range bytes=0-0
+        val request = Request.Builder().url(fileUrl).header("Range", "bytes=0-0").build()
         httpClient.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) {
+            if (!response.isSuccessful && response.code != 416) {
                 throw java8.nio.file.NoSuchFileException(path.toString())
             }
-            val size = response.header("Content-Length")?.toLongOrNull() ?: 0L
+            val contentRange = response.header("Content-Range")
+            val size = if (contentRange != null && contentRange.contains("/")) {
+                contentRange.substringAfter("/").toLongOrNull() ?: 0L
+            } else {
+                response.header("Content-Length")?.toLongOrNull() ?: 0L
+            }
             val lastModifiedHeader = response.header("Last-Modified")
             val lastModifiedTime = if (lastModifiedHeader != null) {
                 try {
@@ -231,13 +303,45 @@ object Client {
     @Throws(IOException::class)
     fun deleteFile(path: Path) {
         val authority = path.authority
+        val token = authenticator.getToken(authority) ?: authority.token
         val segments = path.remotePath.split('/').filter { it.isNotEmpty() }
         if (segments.size < 2) {
             throw IOException("Cannot delete directory $path")
         }
-        val category = segments[0]
+        val rawCategory = segments[0]
         val name = segments[1]
-        sendCgiCommand(authority, "delete.cgi", mapOf("path" to category, "name" to name))
+
+        val pathCandidates = listOf(
+            rawCategory,
+            "/$rawCategory",
+            rawCategory.removePrefix("/"),
+            "/mnt/${rawCategory.removePrefix("/")}",
+            "$rawCategory/"
+        ).distinct()
+
+        var deleted = false
+        for (p in pathCandidates) {
+            val timestamp = System.currentTimeMillis() / 1000L
+            val queryPath = "delete.cgi?"
+            val queryParams = "-path=$p&-name=$name&-timestamp=$timestamp"
+            val sign = generateSignKey(queryPath + queryParams, token)
+            val url = "http://${authority.host}:${authority.port}/cgi-bin/$queryPath$queryParams&-signkey=$sign"
+
+            val responseText = executeRawRequest(url)
+            if (responseText != null && (
+                responseText.contains("\"ResultCode\":\"0\"") ||
+                responseText.contains("\"ResultCode\":0") ||
+                responseText.contains("success")
+            )) {
+                deleted = true
+                break
+            }
+        }
+
+        if (!deleted) {
+            throw IOException("Failed to delete $path from 70mai server")
+        }
+
         LocalWatchService.onEntryDeleted(path as Java8Path)
     }
 

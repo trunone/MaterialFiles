@@ -30,8 +30,8 @@ class EditMai70ServerViewModel : ViewModel() {
                     Mai70ServerAuthenticator.addTransientServer(server)
                     try {
                         val path = server.path
-                        path.fileSystem.use {
-                            path.newDirectoryStream().toList()
+                        path.newDirectoryStream().use { stream ->
+                            stream.toList()
                         }
                     } finally {
                         Mai70ServerAuthenticator.removeTransientServer(server)

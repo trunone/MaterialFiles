@@ -55,16 +55,34 @@ class FileByteChannel(
 
     @Throws(IOException::class)
     override fun onSize(): Long {
+        try {
+            val request = Request.Builder()
+                .url(fileUrl)
+                .head()
+                .build()
+            client.newCall(request).execute().use { response ->
+                if (response.isSuccessful) {
+                    response.header("Content-Length")?.toLongOrNull()?.let { return it }
+                }
+            }
+        } catch (e: Exception) {
+            // Fallback to GET Range
+        }
+
         val request = Request.Builder()
             .url(fileUrl)
-            .head()
+            .header("Range", "bytes=0-0")
             .build()
         client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) {
+            if (!response.isSuccessful && response.code != HTTP_RANGE_NOT_SATISFIABLE) {
                 throw IOException("HTTP ${response.code}: ${response.message}")
             }
+            val contentRange = response.header("Content-Range")
+            if (contentRange != null && contentRange.contains("/")) {
+                contentRange.substringAfter("/").toLongOrNull()?.let { return it }
+            }
             return response.header("Content-Length")?.toLongOrNull()
-                ?: throw IOException("Missing Content-Length header")
+                ?: throw IOException("Missing size info")
         }
     }
 
