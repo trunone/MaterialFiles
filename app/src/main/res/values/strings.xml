@@ -543,6 +543,7 @@
     <string name="storage_add_storage_sftp_server">SFTP server</string>
     <string name="storage_add_storage_smb_server">SMB server</string>
     <string name="storage_add_storage_webdav_server">WebDAV server</string>
+    <string name="storage_add_storage_mai70_server">70mai HTTP server</string>
     <string name="storage_edit_device_storage_title">Edit device storage</string>
     <string name="storage_edit_device_storage_name">Name</string>
     <string name="storage_edit_device_storage_path">Path</string>
@@ -676,6 +677,22 @@
     <string name="storage_edit_webdav_server_access_token_error_empty">Enter an access token</string>
     <string name="storage_edit_webdav_server_connect_and_add">Connect and add</string>
     <string name="storage_edit_webdav_server_add">Add</string>
+    <string name="storage_edit_mai70_server_title_edit">Edit 70mai HTTP server</string>
+    <string name="storage_edit_mai70_server_title_add">Add 70mai HTTP server</string>
+    <string name="storage_edit_mai70_server_host">Hostname</string>
+    <string name="storage_edit_mai70_server_host_placeholder" translatable="false">192.168.0.1</string>
+    <string name="storage_edit_mai70_server_host_error_invalid">Invalid hostname</string>
+    <string name="storage_edit_mai70_server_port">Port</string>
+    <string name="storage_edit_mai70_server_port_placeholder" translatable="false">80</string>
+    <string name="storage_edit_mai70_server_port_error_invalid">Invalid port</string>
+    <string name="storage_edit_mai70_server_token">Token</string>
+    <string name="storage_edit_mai70_server_token_placeholder">Optional 32-character token</string>
+    <string name="storage_edit_mai70_server_path">Path</string>
+    <string name="storage_edit_mai70_server_path_placeholder">Can be left empty</string>
+    <string name="storage_edit_mai70_server_name">Name</string>
+    <string name="storage_edit_mai70_server_name_placeholder">Use hostname</string>
+    <string name="storage_edit_mai70_server_connect_and_add">Connect and add</string>
+    <string name="storage_edit_mai70_server_add">Add</string>
 
     <string name="navigation_storage_subtitle_format">%1$s free of %2$s</string>
     <string name="navigation_add_storage">Add storage…</string>
