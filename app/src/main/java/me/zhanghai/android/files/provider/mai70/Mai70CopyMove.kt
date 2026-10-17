@@ -9,6 +9,8 @@ import java8.nio.file.FileAlreadyExistsException
 import java8.nio.file.StandardCopyOption
 import me.zhanghai.android.files.provider.common.CopyOptions
 import me.zhanghai.android.files.provider.common.copyTo
+import me.zhanghai.android.files.provider.common.deleteIfExists
+import me.zhanghai.android.files.provider.common.newOutputStream
 import me.zhanghai.android.files.provider.mai70.client.Client
 import java.io.IOException
 
@@ -40,7 +42,27 @@ internal object Mai70CopyMove {
         } else {
             val sourceInputStream = Client.retrieveFile(source)
             try {
-                throw UnsupportedOperationException("Writing to 70mai server is not supported")
+                val targetOutputStream = target.newOutputStream()
+                var successful = false
+                try {
+                    sourceInputStream.copyTo(
+                        targetOutputStream, copyOptions.progressIntervalMillis,
+                        copyOptions.progressListener
+                    )
+                    successful = true
+                } finally {
+                    try {
+                        targetOutputStream.close()
+                    } finally {
+                        if (!successful) {
+                            try {
+                                target.deleteIfExists()
+                            } catch (e: Exception) {
+                                e.printStackTrace()
+                            }
+                        }
+                    }
+                }
             } finally {
                 sourceInputStream.close()
             }
