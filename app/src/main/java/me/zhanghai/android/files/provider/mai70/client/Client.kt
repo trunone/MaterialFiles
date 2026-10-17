@@ -449,27 +449,52 @@ object Client {
 
     @Throws(IOException::class)
     fun retrieveFile(path: Path): InputStream {
+        val authority = path.authority
+        prepareCameraAccess(authority)
         val candidateUrls = getFileUrlCandidates(path)
+        var lastException: IOException? = null
         for (url in candidateUrls) {
-            try {
+            var attemptedReauth = false
+            while (true) {
                 val request = Request.Builder().url(url).build()
-                val response = httpClient.newCall(request).execute()
+                val response = try {
+                    httpClient.newCall(request).execute()
+                } catch (e: IOException) {
+                    lastException = e
+                    break
+                }
+                if (response.code == 403 && !attemptedReauth) {
+                    response.close()
+                    attemptedReauth = true
+                    try {
+                        prepareCameraAccess(authority)
+                    } catch (e: Exception) {
+                        // Ignore
+                    }
+                    continue
+                }
                 if (response.isSuccessful) {
                     return response.body.byteStream()
                 }
+                val code = response.code
+                val message = response.message
                 response.close()
-            } catch (e: Exception) {
-                // Try next
+                lastException = IOException("HTTP $code: $message")
+                break
             }
         }
-        throw IOException("Failed to retrieve file $path from candidate URLs: $candidateUrls")
+        throw lastException ?: IOException("Failed to retrieve file $path from candidate URLs: $candidateUrls")
     }
 
     @Throws(IOException::class)
     fun openByteChannel(path: Path, isAppend: Boolean): SeekableByteChannel {
+        val authority = path.authority
+        prepareCameraAccess(authority)
+        val cacheKey = "${authority.host}:${authority.port}/${path.remotePath.removePrefix("/")}"
+        val cachedEntry = fileEntriesCache[cacheKey]
+        val fileSize = cachedEntry?.size ?: try { listFile(path).size } catch (e: Exception) { null }
         val candidateUrls = getFileUrlCandidates(path)
-        val workingUrl = candidateUrls.first()
-        return FileByteChannel(httpClient, workingUrl, isAppend)
+        return FileByteChannel(httpClient, authority, candidateUrls, fileSize, isAppend)
     }
 
     interface Path {
