@@ -5,6 +5,8 @@
 
 package me.zhanghai.android.files.provider.mai70.client
 
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import java8.nio.channels.SeekableByteChannel
 import me.zhanghai.android.files.provider.common.LocalWatchService
 import okhttp3.OkHttpClient
@@ -474,6 +476,69 @@ object Client {
             resultCode == "0" || json.optInt("ResultCode", -1) == 0 || json.optInt("Result", -1) == 0 || json.optInt("status", -1) == 0
         } catch (e: Exception) {
             false
+        }
+    }
+
+    @Throws(IOException::class)
+    fun getThumbnail(path: Path, width: Int, height: Int): Bitmap? {
+        val authority = path.authority
+        prepareCameraAccess(authority)
+        val token = authenticator.getToken(authority) ?: authority.token
+        val remotePath = path.remotePath.removePrefix("/")
+        val segments = remotePath.split('/').filter { it.isNotEmpty() }
+        if (segments.isEmpty()) return null
+
+        val fileName = path.remotePath.substringAfterLast("/")
+        val fileBase = fileName.substringBeforeLast(".")
+        val rawCategory = segments.firstOrNull() ?: ""
+
+        val cacheKey = "${authority.host}:${authority.port}/$remotePath"
+        val cachedEntry = fileEntriesCache[cacheKey]
+
+        val urlCandidates = mutableListOf<String>()
+
+        // 1. Target CGI thumbnail endpoint
+        val p = cachedEntry?.path?.removePrefix("/") ?: rawCategory
+        val timestamp = System.currentTimeMillis() / 1000L
+        val queryPath = "getthumbnail.cgi?"
+        val queryParams = "-path=$p&-name=$fileName&-timestamp=$timestamp"
+        val sign = generateSignKey(queryPath + queryParams, token)
+        urlCandidates.add("http://${authority.host}:${authority.port}/cgi-bin/$queryPath$queryParams&-signkey=$sign")
+
+        // 2. Target sidecar THM/JPG file candidates
+        val thumbNames = listOf("$fileBase.THM", "$fileBase.JPG", "$fileBase.thm", "$fileBase.jpg")
+        for (thumbName in thumbNames) {
+            urlCandidates.add("http://${authority.host}:${authority.port}/$rawCategory/$thumbName")
+            urlCandidates.add("http://${authority.host}:${authority.port}/sd/$rawCategory/$thumbName")
+        }
+
+        for (url in urlCandidates.distinct()) {
+            val bitmap = tryFetchBitmap(url)
+            if (bitmap != null) return bitmap
+        }
+
+        return null
+    }
+
+    private fun tryFetchBitmap(url: String): Bitmap? {
+        return try {
+            val request = Request.Builder().url(url).build()
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return null
+                val contentLength = response.header("Content-Length")?.toLongOrNull() ?: -1L
+                // Avoid fetching large payloads (e.g. video files > 2 MB)
+                if (contentLength > 2 * 1024 * 1024) return null
+                val body = response.body ?: return null
+                body.byteStream().use { inputStream ->
+                    val bitmap = BitmapFactory.decodeStream(inputStream)
+                    if (bitmap != null && bitmap.width > 0 && bitmap.height > 0) {
+                        return bitmap
+                    }
+                }
+                null
+            }
+        } catch (e: Exception) {
+            null
         }
     }
 

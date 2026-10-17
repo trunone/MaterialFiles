@@ -40,6 +40,8 @@ import me.zhanghai.android.files.provider.document.isDocumentPath
 import me.zhanghai.android.files.provider.document.resolver.DocumentResolver
 import me.zhanghai.android.files.provider.ftp.isFtpPath
 import me.zhanghai.android.files.provider.linux.isLinuxPath
+import me.zhanghai.android.files.provider.mai70.client.Client
+import me.zhanghai.android.files.provider.mai70.isMai70Path
 import me.zhanghai.android.files.settings.Settings
 import me.zhanghai.android.files.util.getDimensionPixelSize
 import me.zhanghai.android.files.util.getPackageArchiveInfoCompat
@@ -88,6 +90,19 @@ class PathAttributesFetcher(
                         e.printStackTrace()
                         null
                     }
+                }
+                if (thumbnail != null) {
+                    return DrawableResult(
+                        thumbnail.toDrawable(options.context.resources), true, path.dataSource
+                    )
+                }
+            }
+            if (path.isMai70Path) {
+                val thumbnail = try {
+                    Client.getThumbnail(path as Client.Path, width.px, height.px)
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                    null
                 }
                 if (thumbnail != null) {
                     return DrawableResult(
