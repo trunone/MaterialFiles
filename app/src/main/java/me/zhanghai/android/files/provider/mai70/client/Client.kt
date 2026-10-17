@@ -18,6 +18,7 @@ import java.security.MessageDigest
 import java.time.Instant
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import java8.nio.file.Path as Java8Path
 
 object Client {
@@ -40,6 +41,8 @@ object Client {
     )
 
     val CATEGORY_TYPES = CATEGORY_NAMES.entries.associate { (k, v) -> v.lowercase(Locale.ROOT) to k }
+
+    private val fileEntriesCache = ConcurrentHashMap<String, FileEntry>()
 
     data class Mai70FileInfo(
         val isDirectory: Boolean,
@@ -230,6 +233,13 @@ object Client {
                 break
             }
 
+            for (entry in batch) {
+                val categoryName = CATEGORY_NAMES[type] ?: entry.path
+                val fullRemotePath = "/$categoryName/${entry.name}"
+                val cacheKey = "${authority.host}:${authority.port}/${fullRemotePath.removePrefix("/")}"
+                fileEntriesCache[cacheKey] = entry
+            }
+
             allEntries.addAll(batch)
             if (batch.size < pageSize) {
                 break
@@ -300,6 +310,25 @@ object Client {
         }
     }
 
+    private fun getFileUrlCandidates(path: Path): List<String> {
+        val authority = path.authority
+        val cacheKey = "${authority.host}:${authority.port}/${path.remotePath.removePrefix("/")}"
+        val cachedEntry = fileEntriesCache[cacheKey]
+        val remotePath = path.remotePath.removePrefix("/")
+        val fileName = path.remotePath.substringAfterLast("/")
+
+        val candidates = mutableListOf<String>()
+        candidates.add("http://${authority.host}:${authority.port}/$remotePath")
+        if (cachedEntry != null) {
+            val entryPath = cachedEntry.path.removePrefix("/")
+            candidates.add("http://${authority.host}:${authority.port}/$entryPath/${cachedEntry.name}")
+            candidates.add("http://${authority.host}:${authority.port}/sd/$entryPath/${cachedEntry.name}")
+        }
+        candidates.add("http://${authority.host}:${authority.port}/sd/$remotePath")
+        candidates.add("http://${authority.host}:${authority.port}/$fileName")
+        return candidates.distinct()
+    }
+
     @Throws(IOException::class)
     fun listFile(path: Path): Mai70FileInfo {
         val remotePath = path.remotePath
@@ -309,55 +338,67 @@ object Client {
             return Mai70FileInfo(isDirectory = true, size = 0L, lastModifiedTime = Instant.EPOCH)
         }
 
-        val fileUrl = "http://${path.authority.host}:${path.authority.port}/${remotePath.removePrefix("/")}"
+        val cacheKey = "${path.authority.host}:${path.authority.port}/${remotePath.removePrefix("/")}"
+        val cachedEntry = fileEntriesCache[cacheKey]
+        if (cachedEntry != null) {
+            return Mai70FileInfo(isDirectory = false, size = cachedEntry.size, lastModifiedTime = Instant.EPOCH)
+        }
 
-        // Try HEAD first, with GET Range fallback if HEAD is unsupported by dashcam server
-        try {
-            val request = Request.Builder().url(fileUrl).head().build()
-            httpClient.newCall(request).execute().use { response ->
-                if (response.isSuccessful) {
-                    val size = response.header("Content-Length")?.toLongOrNull() ?: 0L
-                    val lastModifiedHeader = response.header("Last-Modified")
-                    val lastModifiedTime = if (lastModifiedHeader != null) {
-                        try {
-                            DateTimeFormatter.RFC_1123_DATE_TIME.parse(lastModifiedHeader, Instant::from)
-                        } catch (e: Exception) {
+        // If not in cache, try candidate URLs with HEAD/GET Range
+        val candidateUrls = getFileUrlCandidates(path)
+        for (url in candidateUrls) {
+            try {
+                val request = Request.Builder().url(url).head().build()
+                httpClient.newCall(request).execute().use { response ->
+                    if (response.isSuccessful) {
+                        val size = response.header("Content-Length")?.toLongOrNull() ?: 0L
+                        val lastModifiedHeader = response.header("Last-Modified")
+                        val lastModifiedTime = if (lastModifiedHeader != null) {
+                            try {
+                                DateTimeFormatter.RFC_1123_DATE_TIME.parse(lastModifiedHeader, Instant::from)
+                            } catch (e: Exception) {
+                                Instant.EPOCH
+                            }
+                        } else {
                             Instant.EPOCH
                         }
-                    } else {
-                        Instant.EPOCH
+                        return Mai70FileInfo(isDirectory = false, size = size, lastModifiedTime = lastModifiedTime)
                     }
-                    return Mai70FileInfo(isDirectory = false, size = size, lastModifiedTime = lastModifiedTime)
                 }
+            } catch (e: Exception) {
+                // Ignore
             }
-        } catch (e: Exception) {
-            // Ignored, proceed to GET fallback
+
+            try {
+                val request = Request.Builder().url(url).header("Range", "bytes=0-0").build()
+                httpClient.newCall(request).execute().use { response ->
+                    if (response.isSuccessful || response.code == 416) {
+                        val contentRange = response.header("Content-Range")
+                        val size = if (contentRange != null && contentRange.contains("/")) {
+                            contentRange.substringAfter("/").toLongOrNull() ?: 0L
+                        } else {
+                            response.header("Content-Length")?.toLongOrNull() ?: 0L
+                        }
+                        val lastModifiedHeader = response.header("Last-Modified")
+                        val lastModifiedTime = if (lastModifiedHeader != null) {
+                            try {
+                                DateTimeFormatter.RFC_1123_DATE_TIME.parse(lastModifiedHeader, Instant::from)
+                            } catch (e: Exception) {
+                                Instant.EPOCH
+                            }
+                        } else {
+                            Instant.EPOCH
+                        }
+                        return Mai70FileInfo(isDirectory = false, size = size, lastModifiedTime = lastModifiedTime)
+                    }
+                }
+            } catch (e: Exception) {
+                // Ignore
+            }
         }
 
-        // Fallback: GET with Range bytes=0-0
-        val request = Request.Builder().url(fileUrl).header("Range", "bytes=0-0").build()
-        httpClient.newCall(request).execute().use { response ->
-            if (!response.isSuccessful && response.code != 416) {
-                throw java8.nio.file.NoSuchFileException(path.toString())
-            }
-            val contentRange = response.header("Content-Range")
-            val size = if (contentRange != null && contentRange.contains("/")) {
-                contentRange.substringAfter("/").toLongOrNull() ?: 0L
-            } else {
-                response.header("Content-Length")?.toLongOrNull() ?: 0L
-            }
-            val lastModifiedHeader = response.header("Last-Modified")
-            val lastModifiedTime = if (lastModifiedHeader != null) {
-                try {
-                    DateTimeFormatter.RFC_1123_DATE_TIME.parse(lastModifiedHeader, Instant::from)
-                } catch (e: Exception) {
-                    Instant.EPOCH
-                }
-            } else {
-                Instant.EPOCH
-            }
-            return Mai70FileInfo(isDirectory = false, size = size, lastModifiedTime = lastModifiedTime)
-        }
+        // Default fallback rather than crashing with NoSuchFileException
+        return Mai70FileInfo(isDirectory = false, size = 0L, lastModifiedTime = Instant.EPOCH)
     }
 
     @Throws(IOException::class)
@@ -408,20 +449,27 @@ object Client {
 
     @Throws(IOException::class)
     fun retrieveFile(path: Path): InputStream {
-        val fileUrl = "http://${path.authority.host}:${path.authority.port}/${path.remotePath.removePrefix("/")}"
-        val request = Request.Builder().url(fileUrl).build()
-        val response = httpClient.newCall(request).execute()
-        if (!response.isSuccessful) {
-            response.close()
-            throw IOException("HTTP ${response.code}: ${response.message}")
+        val candidateUrls = getFileUrlCandidates(path)
+        for (url in candidateUrls) {
+            try {
+                val request = Request.Builder().url(url).build()
+                val response = httpClient.newCall(request).execute()
+                if (response.isSuccessful) {
+                    return response.body.byteStream()
+                }
+                response.close()
+            } catch (e: Exception) {
+                // Try next
+            }
         }
-        return response.body.byteStream()
+        throw IOException("Failed to retrieve file $path from candidate URLs: $candidateUrls")
     }
 
     @Throws(IOException::class)
     fun openByteChannel(path: Path, isAppend: Boolean): SeekableByteChannel {
-        val fileUrl = "http://${path.authority.host}:${path.authority.port}/${path.remotePath.removePrefix("/")}"
-        return FileByteChannel(httpClient, fileUrl, isAppend)
+        val candidateUrls = getFileUrlCandidates(path)
+        val workingUrl = candidateUrls.first()
+        return FileByteChannel(httpClient, workingUrl, isAppend)
     }
 
     interface Path {
