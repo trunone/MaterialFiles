@@ -412,39 +412,69 @@ object Client {
         }
         val rawCategory = segments[0]
         val name = segments[1]
+        val type = CATEGORY_TYPES[rawCategory.lowercase(Locale.ROOT)] ?: -1
 
-        val pathCandidates = listOf(
-            rawCategory,
-            "/$rawCategory",
-            rawCategory.removePrefix("/"),
-            "/mnt/${rawCategory.removePrefix("/")}",
-            "$rawCategory/"
-        ).distinct()
+        val cacheKey = "${authority.host}:${authority.port}/${path.remotePath.removePrefix("/")}"
+        val cachedEntry = fileEntriesCache[cacheKey]
+
+        val pathCandidates = mutableListOf<String>()
+        if (cachedEntry != null) {
+            pathCandidates.add(cachedEntry.path)
+            pathCandidates.add(cachedEntry.path.removePrefix("/"))
+            pathCandidates.add("sd/${cachedEntry.path.removePrefix("/")}")
+            pathCandidates.add("/${cachedEntry.path.removePrefix("/")}")
+        }
+        pathCandidates.add(rawCategory)
+        pathCandidates.add("sd/$rawCategory")
+        pathCandidates.add("/$rawCategory")
+        pathCandidates.add("/sd/$rawCategory")
+        pathCandidates.add("/mnt/$rawCategory")
+        pathCandidates.add("/mnt/sd/$rawCategory")
+        pathCandidates.add("")
+        val distinctPathCandidates = pathCandidates.distinct()
 
         var deleted = false
-        for (p in pathCandidates) {
+        for (p in distinctPathCandidates) {
             val timestamp = System.currentTimeMillis() / 1000L
             val queryPath = "delete.cgi?"
-            val queryParams = "-path=$p&-name=$name&-timestamp=$timestamp"
-            val sign = generateSignKey(queryPath + queryParams, token)
-            val url = "http://${authority.host}:${authority.port}/cgi-bin/$queryPath$queryParams&-signkey=$sign"
-
-            val responseText = executeRawRequest(url)
-            if (responseText != null && (
-                responseText.contains("\"ResultCode\":\"0\"") ||
-                responseText.contains("\"ResultCode\":0") ||
-                responseText.contains("success")
-            )) {
-                deleted = true
-                break
+            val queryParamsList = mutableListOf<String>()
+            queryParamsList.add("-path=$p&-name=$name&-timestamp=$timestamp")
+            queryParamsList.add("&-path=$p&-name=$name&-timestamp=$timestamp")
+            if (type >= 0) {
+                queryParamsList.add("-path=$p&-name=$name&-type=$type&-timestamp=$timestamp")
+                queryParamsList.add("-type=$type&-name=$name&-timestamp=$timestamp")
             }
+
+            for (queryParams in queryParamsList) {
+                val sign = generateSignKey(queryPath + queryParams, token)
+                val url = "http://${authority.host}:${authority.port}/cgi-bin/$queryPath$queryParams&-signkey=$sign"
+
+                val responseText = executeRawRequest(url)
+                if (responseText != null && isDeleteSuccessResponse(responseText)) {
+                    deleted = true
+                    break
+                }
+            }
+            if (deleted) break
         }
 
         if (!deleted) {
             throw IOException("Failed to delete $path from 70mai server")
         }
 
+        fileEntriesCache.remove(cacheKey)
         LocalWatchService.onEntryDeleted(path as Java8Path)
+    }
+
+    private fun isDeleteSuccessResponse(responseText: String): Boolean {
+        if (responseText.contains("success", ignoreCase = true)) return true
+        return try {
+            val json = JSONObject(responseText)
+            val resultCode = json.optString("ResultCode", json.optString("Result", "-1"))
+            resultCode == "0" || json.optInt("ResultCode", -1) == 0 || json.optInt("Result", -1) == 0 || json.optInt("status", -1) == 0
+        } catch (e: Exception) {
+            false
+        }
     }
 
     @Throws(IOException::class)
