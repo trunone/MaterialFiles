@@ -78,8 +78,6 @@ class PathAttributesFetcher(
         val isThumbnail = width is Dimension.Pixels && width.px <= 512
             && height is Dimension.Pixels && height.px <= 384
         if (isThumbnail) {
-            width as Dimension.Pixels
-            height as Dimension.Pixels
             if (path.isDocumentPath && attributes.documentSupportsThumbnail) {
                 val thumbnail = runWithCancellationSignal { signal ->
                     try {
@@ -97,19 +95,6 @@ class PathAttributesFetcher(
                     )
                 }
             }
-            if (path.isMai70Path) {
-                val thumbnail = try {
-                    Client.getThumbnail(path as Client.Path, width.px, height.px)
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                    null
-                }
-                if (thumbnail != null) {
-                    return DrawableResult(
-                        thumbnail.toDrawable(options.context.resources), true, path.dataSource
-                    )
-                }
-            }
             if (path.isRemotePath) {
                 // FTP doesn't support random access and requires one connection per parallel read.
                 val shouldReadRemotePath = !path.isFtpPath
@@ -120,6 +105,20 @@ class PathAttributesFetcher(
             }
         }
         val mimeType = AndroidFileTypeDetector.getMimeType(data.first, data.second).asMimeType()
+        if (path.isMai70Path && (isThumbnail || mimeType.isMedia || mimeType.isVideo)) {
+            val reqWidth = if (width is Dimension.Pixels) width.px else 512
+            val reqHeight = if (height is Dimension.Pixels) height.px else 384
+            val thumbnail = try {
+                Client.getThumbnail(path, reqWidth, reqHeight)
+            } catch (e: Exception) {
+                null
+            }
+            if (thumbnail != null) {
+                return DrawableResult(
+                    thumbnail.toDrawable(options.context.resources), true, path.dataSource
+                )
+            }
+        }
         when {
             mimeType.isApk && path.isGetPackageArchiveInfoCompatible -> {
                 try {

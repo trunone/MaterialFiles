@@ -73,7 +73,11 @@ class FileByteChannel(
                 activeUrl = url
                 val body = response.body
                 val destination = ByteBuffer.allocate(size)
+                val isPartialContent = response.code == 206
                 val limit = body.byteStream().use { inputStream ->
+                    if (!isPartialContent && position > 0) {
+                        inputStream.skipFully(position)
+                    }
                     inputStream.readFully(destination.array(), destination.arrayOffset(), size)
                 }
                 destination.limit(limit)
@@ -131,6 +135,20 @@ class FileByteChannel(
 
     @Throws(IOException::class)
     override fun onClose() {}
+
+    private fun java.io.InputStream.skipFully(count: Long) {
+        var remaining = count
+        val bufferSize = 8192
+        val buffer = ByteArray(bufferSize)
+        while (remaining > 0) {
+            val toRead = remaining.coerceAtMost(bufferSize.toLong()).toInt()
+            val read = read(buffer, 0, toRead)
+            if (read < 0) {
+                throw java.io.EOFException("Premature EOF while skipping $remaining bytes")
+            }
+            remaining -= read
+        }
+    }
 
     companion object {
         private const val HTTP_FORBIDDEN = 403
