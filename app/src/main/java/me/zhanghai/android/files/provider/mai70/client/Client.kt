@@ -80,7 +80,66 @@ object Client {
     }
 
     @Throws(IOException::class)
+    fun registerClient(authority: Authority): Boolean {
+        val token = authenticator.getToken(authority) ?: authority.token
+        val timestamp = System.currentTimeMillis() / 1000L
+        val queryPath = "client.cgi?"
+        val queryParams = "&-operation=register&-ip=192.168.0.2&-timestamp=$timestamp"
+        val sign = generateSignKey(queryPath + queryParams, token)
+        val url = "http://${authority.host}:${authority.port}/cgi-bin/$queryPath$queryParams&-signkey=$sign"
+
+        val responseText = executeRawRequest(url)
+        return responseText != null && (
+            responseText.contains("success") ||
+            responseText.contains("\"ResultCode\":0") ||
+            responseText.contains("\"ResultCode\":\"0\"")
+        )
+    }
+
+    @Throws(IOException::class)
+    fun setAlbumMode(authority: Authority, enable: Boolean): Boolean {
+        val token = authenticator.getToken(authority) ?: authority.token
+        val timestamp = System.currentTimeMillis() / 1000L
+        val enableValue = if (enable) 0 else 1
+
+        val queryPath = "setaccessalbum.cgi?"
+        val queryParamsCandidates = listOf(
+            "&-enable=$enableValue&-timestamp=$timestamp",
+            "-enable=$enableValue&-timestamp=$timestamp"
+        )
+
+        for (queryParams in queryParamsCandidates) {
+            val sign = generateSignKey(queryPath + queryParams, token)
+            val url = "http://${authority.host}:${authority.port}/cgi-bin/$queryPath$queryParams&-signkey=$sign"
+
+            val responseText = executeRawRequest(url)
+            if (responseText != null && (
+                responseText.contains("\"ResultCode\":0") ||
+                responseText.contains("\"ResultCode\":\"0\"")
+            )) {
+                return true
+            }
+        }
+        return false
+    }
+
+    @Throws(IOException::class)
+    fun prepareCameraAccess(authority: Authority) {
+        try {
+            registerClient(authority)
+        } catch (e: Exception) {
+            // Best effort
+        }
+        try {
+            setAlbumMode(authority, enable = true)
+        } catch (e: Exception) {
+            // Best effort
+        }
+    }
+
+    @Throws(IOException::class)
     fun getFileCounts(authority: Authority): Map<Int, Int> {
+        prepareCameraAccess(authority)
         val token = authenticator.getToken(authority) ?: authority.token
         val timestamp = System.currentTimeMillis() / 1000L
         val queryPath = "getfilecount.cgi?"
@@ -112,6 +171,7 @@ object Client {
 
     @Throws(IOException::class)
     fun getFileEntries(authority: Authority, type: Int): List<FileEntry> {
+        prepareCameraAccess(authority)
         val token = authenticator.getToken(authority) ?: authority.token
         val allEntries = mutableListOf<FileEntry>()
         var startIndex = 0
@@ -303,6 +363,7 @@ object Client {
     @Throws(IOException::class)
     fun deleteFile(path: Path) {
         val authority = path.authority
+        prepareCameraAccess(authority)
         val token = authenticator.getToken(authority) ?: authority.token
         val segments = path.remotePath.split('/').filter { it.isNotEmpty() }
         if (segments.size < 2) {
