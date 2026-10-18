@@ -5,19 +5,18 @@
 
 package me.zhanghai.android.files.provider.mai70.client
 
+import com.github.trunone.mai70protocol.Mai70Client
+import com.github.trunone.mai70protocol.TokenStore
+import com.github.trunone.mai70protocol.http.HttpTransport
+import com.github.trunone.mai70protocol.models.Category
 import java8.nio.channels.SeekableByteChannel
+import me.zhanghai.android.files.app.application
 import me.zhanghai.android.files.provider.common.LocalWatchService
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import org.json.JSONArray
-import org.json.JSONObject
 import java.io.IOException
 import java.io.InputStream
-import java.math.BigInteger
-import java.security.MessageDigest
 import java.time.Instant
-import java.time.format.DateTimeFormatter
-import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java8.nio.file.Path as Java8Path
 
@@ -31,18 +30,83 @@ object Client {
         .writeTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
         .build()
 
-    val CATEGORY_NAMES = mapOf(
-        0 to "Normal",
-        1 to "Event",
-        2 to "Parking",
-        3 to "Photo",
-        4 to "Unknown",
-        5 to "TimeLapse"
-    )
+    private val clients = ConcurrentHashMap<Authority, Mai70Client>()
 
-    val CATEGORY_TYPES = CATEGORY_NAMES.entries.associate { (k, v) -> v.lowercase(Locale.ROOT) to k }
+    private val tokenStore = object : TokenStore {
+        override fun getToken(authority: com.github.trunone.mai70protocol.models.Authority): String? {
+            val appAuth = Authority(
+                Protocol.MAI70,
+                authority.host,
+                authority.port,
+                ""
+            )
+            return authenticator.getToken(appAuth)
+        }
 
-    private val fileEntriesCache = ConcurrentHashMap<String, FileEntry>()
+        override fun saveToken(authority: com.github.trunone.mai70protocol.models.Authority, token: String) {}
+    }
+
+    private fun getMai70Client(authority: Authority): Mai70Client {
+        return clients.getOrPut(authority) {
+            val transport: HttpTransport = try {
+                com.github.trunone.mai70protocol.android.AndroidNetworkTransport(
+                    context = application,
+                    defaultCameraIp = authority.host
+                )
+            } catch (e: Throwable) {
+                object : HttpTransport {
+                    override suspend fun get(url: String): String? {
+                        val request = Request.Builder().url(url).build()
+                        httpClient.newCall(request).execute().use { response ->
+                            if (!response.isSuccessful) return null
+                            return response.body.string()
+                        }
+                    }
+
+                    override suspend fun openStream(url: String): InputStream? {
+                        val request = Request.Builder().url(url).build()
+                        val response = httpClient.newCall(request).execute()
+                        if (!response.isSuccessful) {
+                            response.close()
+                            return null
+                        }
+                        return response.body.byteStream()
+                    }
+
+                    override suspend fun probe(url: String): Pair<Long, String?>? {
+                        val request = Request.Builder().url(url).head().build()
+                        try {
+                            httpClient.newCall(request).execute().use { response ->
+                                if (response.isSuccessful) {
+                                    val size = response.header("Content-Length")?.toLongOrNull() ?: 0L
+                                    val lastModified = response.header("Last-Modified")
+                                    return Pair(size, lastModified)
+                                }
+                            }
+                        } catch (_: Exception) {}
+                        return null
+                    }
+                }
+            }
+            Mai70Client(
+                transport = transport,
+                tokenStore = tokenStore,
+                host = authority.host,
+                port = authority.port
+            )
+        }
+    }
+
+    fun prepareCameraAccess(authority: Authority) {
+        val mai70Client = getMai70Client(authority)
+        kotlinx.coroutines.runBlocking {
+            try {
+                mai70Client.prepareCameraAccess()
+            } catch (e: Exception) {
+                // Best effort
+            }
+        }
+    }
 
     data class Mai70FileInfo(
         val isDirectory: Boolean,
@@ -50,283 +114,41 @@ object Client {
         val lastModifiedTime: Instant
     )
 
-    data class FileEntry(
-        val path: String,
-        val name: String,
-        val size: Long
-    )
-
-    fun calculateMD5(input: String): String {
-        val md = MessageDigest.getInstance("MD5")
-        val digest = md.digest(input.toByteArray(Charsets.UTF_8))
-        return BigInteger(1, digest).toString(16).padStart(32, '0')
-    }
-
-    fun generateSignKey(urlQuery: String, token: String): String =
-        calculateMD5(urlQuery + token)
-
-    @Throws(IOException::class)
-    fun executeRawRequest(url: String): String? {
-        val request = Request.Builder().url(url).build()
-        httpClient.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) {
-                return null
-            }
-            var text = response.body.string()
-            if (text.contains(",\n]}")) {
-                text = text.replace(",\n]}", "]} ")
-            } else if (text.contains(",]}")) {
-                text = text.replace(",]}", "]} ")
-            }
-            return text
-        }
-    }
-
-    @Throws(IOException::class)
-    fun registerClient(authority: Authority): Boolean {
-        val token = authenticator.getToken(authority) ?: authority.token
-        val timestamp = System.currentTimeMillis() / 1000L
-        val queryPath = "client.cgi?"
-        val queryParams = "&-operation=register&-ip=192.168.0.2&-timestamp=$timestamp"
-        val sign = generateSignKey(queryPath + queryParams, token)
-        val url = "http://${authority.host}:${authority.port}/cgi-bin/$queryPath$queryParams&-signkey=$sign"
-
-        val responseText = executeRawRequest(url)
-        return responseText != null && (
-            responseText.contains("success") ||
-            responseText.contains("\"ResultCode\":0") ||
-            responseText.contains("\"ResultCode\":\"0\"")
-        )
-    }
-
-    @Throws(IOException::class)
-    fun setAlbumMode(authority: Authority, enable: Boolean): Boolean {
-        val token = authenticator.getToken(authority) ?: authority.token
-        val timestamp = System.currentTimeMillis() / 1000L
-        val enableValue = if (enable) 0 else 1
-
-        val queryPath = "setaccessalbum.cgi?"
-        val queryParamsCandidates = listOf(
-            "&-enable=$enableValue&-timestamp=$timestamp",
-            "-enable=$enableValue&-timestamp=$timestamp"
-        )
-
-        for (queryParams in queryParamsCandidates) {
-            val sign = generateSignKey(queryPath + queryParams, token)
-            val url = "http://${authority.host}:${authority.port}/cgi-bin/$queryPath$queryParams&-signkey=$sign"
-
-            val responseText = executeRawRequest(url)
-            if (responseText != null && (
-                responseText.contains("\"ResultCode\":0") ||
-                responseText.contains("\"ResultCode\":\"0\"")
-            )) {
-                return true
-            }
-        }
-        return false
-    }
-
-    @Throws(IOException::class)
-    fun prepareCameraAccess(authority: Authority) {
-        try {
-            registerClient(authority)
-        } catch (e: Exception) {
-            // Best effort
-        }
-        try {
-            setAlbumMode(authority, enable = true)
-        } catch (e: Exception) {
-            // Best effort
-        }
-    }
-
-    @Throws(IOException::class)
-    fun getFileCounts(authority: Authority): Map<Int, Int> {
-        prepareCameraAccess(authority)
-        val token = authenticator.getToken(authority) ?: authority.token
-        val timestamp = System.currentTimeMillis() / 1000L
-        val queryPath = "getfilecount.cgi?"
-        val queryParams = "-timestamp=$timestamp"
-        val sign = generateSignKey(queryPath + queryParams, token)
-        val url = "http://${authority.host}:${authority.port}/cgi-bin/$queryPath$queryParams&-signkey=$sign"
-
-        val responseText = executeRawRequest(url) ?: return emptyMap()
-        val counts = mutableMapOf<Int, Int>()
-        try {
-            val json = JSONObject(responseText)
-            val resultCode = json.optString("ResultCode", "-1")
-            if (resultCode == "0" && !json.isNull("Result")) {
-                val result = json.getJSONArray("Result")
-                for (i in 0 until result.length()) {
-                    val item = result.getJSONObject(i)
-                    val type = item.optString("type").toIntOrNull()
-                    val count = item.optString("count").toIntOrNull()
-                    if (type != null && count != null) {
-                        counts[type] = count
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-        return counts
-    }
-
-    @Throws(IOException::class)
-    fun getFileEntries(authority: Authority, type: Int): List<FileEntry> {
-        prepareCameraAccess(authority)
-        val token = authenticator.getToken(authority) ?: authority.token
-        val allEntries = mutableListOf<FileEntry>()
-        var startIndex = 0
-        val pageSize = 100
-
-        while (true) {
-            val timestamp = System.currentTimeMillis() / 1000L
-            val queryPath = "getfilelist.cgi?"
-            val queryParams = "-start=$startIndex&-end=${startIndex + pageSize - 1}&-type=$type&-timestamp=$timestamp"
-            val sign = generateSignKey(queryPath + queryParams, token)
-            var url = "http://${authority.host}:${authority.port}/cgi-bin/$queryPath$queryParams&-signkey=$sign"
-
-            var responseText = executeRawRequest(url)
-            var batch = parseFileEntriesResponse(responseText)
-
-            // If Result is empty or failed on first page, try fallback query formats
-            if ((batch == null || batch.isEmpty()) && startIndex == 0) {
-                val fallbackFormats = listOf(0, 1, 2, 3)
-                for (format in fallbackFormats) {
-                    val altTimestamp = System.currentTimeMillis() / 1000L
-                    val altUrl = when (format) {
-                        0 -> {
-                            val qp = "-start=0&-end=${pageSize - 1}&-type=$type&-timestamp=$altTimestamp"
-                            val s = generateSignKey("getfilelist.cgi?" + qp, token)
-                            "http://${authority.host}:${authority.port}/cgi-bin/getfilelist.cgi?$qp&-signkey=$s"
-                        }
-                        1 -> {
-                            val qp = "-start=0&-end=${pageSize - 1}&-timestamp=$altTimestamp"
-                            val s = generateSignKey("getfilelist.cgi?" + qp, token)
-                            "http://${authority.host}:${authority.port}/cgi-bin/getfilelist.cgi?$qp&-signkey=$s"
-                        }
-                        2 -> {
-                            val qp = "start=0&end=${pageSize - 1}&type=$type&timestamp=$altTimestamp"
-                            val s = generateSignKey("getfilelist.cgi?" + qp, token)
-                            "http://${authority.host}:${authority.port}/cgi-bin/getfilelist.cgi?$qp&signkey=$s"
-                        }
-                        3 -> {
-                            val qp = "-start=1&-end=$pageSize&-type=$type&-timestamp=$altTimestamp"
-                            val s = generateSignKey("getfilelist.cgi?" + qp, token)
-                            "http://${authority.host}:${authority.port}/cgi-bin/getfilelist.cgi?$qp&-signkey=$s"
-                        }
-                        else -> continue
-                    }
-
-                    val altText = executeRawRequest(altUrl) ?: continue
-                    val altBatch = parseFileEntriesResponse(altText)
-                    if (altBatch != null && altBatch.isNotEmpty()) {
-                        batch = altBatch
-                        responseText = altText
-                        break
-                    }
-                }
-            }
-
-            if (batch == null || batch.isEmpty()) {
-                break
-            }
-
-            for (entry in batch) {
-                val categoryName = CATEGORY_NAMES[type] ?: entry.path
-                val fullRemotePath = "/$categoryName/${entry.name}"
-                val cacheKey = "${authority.host}:${authority.port}/${fullRemotePath.removePrefix("/")}"
-                fileEntriesCache[cacheKey] = entry
-            }
-
-            allEntries.addAll(batch)
-            if (batch.size < pageSize) {
-                break
-            }
-
-            startIndex += pageSize
-        }
-
-        return allEntries
-    }
-
-    private fun parseFileEntriesResponse(responseText: String?): List<FileEntry>? {
-        if (responseText.isNullOrEmpty()) return null
-        return try {
-            val json = JSONObject(responseText)
-            val resultCode = json.optString("ResultCode", "-1")
-            if (resultCode != "0" || json.isNull("Result")) return null
-            val result = json.getJSONArray("Result")
-            val entries = mutableListOf<FileEntry>()
-            for (i in 0 until result.length()) {
-                val item = result.getJSONObject(i)
-                val path = item.optString("path")
-                val name = item.optString("name")
-                var size = item.optString("size").toLongOrNull() ?: 0L
-                if (size < 0) {
-                    size += (4L * 1024 * 1024 * 1024)
-                }
-                entries.add(FileEntry(path, name, size))
-            }
-            entries
-        } catch (e: Exception) {
-            null
-        }
-    }
-
     @Throws(IOException::class)
     fun listDirectory(path: Path): List<Path> {
         val authority = path.authority
         val remotePath = path.remotePath
         val segments = remotePath.split('/').filter { it.isNotEmpty() }
 
-        if (segments.isEmpty()) {
-            // Root directory: return category subdirectories
-            val counts = try {
-                getFileCounts(authority)
-            } catch (e: Exception) {
-                emptyMap()
-            }
-            val result = mutableListOf<Path>()
-            for ((type, name) in CATEGORY_NAMES) {
-                val count = counts[type] ?: -1
-                if (count != 0) {
-                    result.add(path.resolve(name))
+        val mai70Client = getMai70Client(authority)
+
+        return kotlinx.coroutines.runBlocking {
+            if (segments.isEmpty()) {
+                val counts = try {
+                    mai70Client.getFileCounts()
+                } catch (e: Exception) {
+                    emptyMap()
                 }
+                val result = mutableListOf<Path>()
+                for (category in Category.entries) {
+                    if (category == Category.UNKNOWN) continue
+                    val count = counts[category] ?: -1
+                    if (count != 0) {
+                        result.add(path.resolve(category.categoryName))
+                    }
+                }
+                result
+            } else if (segments.size == 1) {
+                val categoryName = segments[0]
+                val category = Category.fromName(categoryName)
+                val fileEntries = mai70Client.listFiles(category)
+                fileEntries.map { entry ->
+                    path.resolve(entry.name)
+                }
+            } else {
+                emptyList()
             }
-            return result
-        } else if (segments.size == 1) {
-            // Category directory (e.g. /Normal)
-            val categoryName = segments[0]
-            val type = CATEGORY_TYPES[categoryName.lowercase(Locale.ROOT)]
-                ?: throw IOException("Unknown category directory: $categoryName")
-            val fileEntries = getFileEntries(authority, type)
-            return fileEntries.map { entry ->
-                path.resolve(entry.name)
-            }
-        } else {
-            return emptyList()
         }
-    }
-
-    private fun getFileUrlCandidates(path: Path): List<String> {
-        val authority = path.authority
-        val cacheKey = "${authority.host}:${authority.port}/${path.remotePath.removePrefix("/")}"
-        val cachedEntry = fileEntriesCache[cacheKey]
-        val remotePath = path.remotePath.removePrefix("/")
-        val fileName = path.remotePath.substringAfterLast("/")
-
-        val candidates = mutableListOf<String>()
-        candidates.add("http://${authority.host}:${authority.port}/$remotePath")
-        if (cachedEntry != null) {
-            val entryPath = cachedEntry.path.removePrefix("/")
-            candidates.add("http://${authority.host}:${authority.port}/$entryPath/${cachedEntry.name}")
-            candidates.add("http://${authority.host}:${authority.port}/sd/$entryPath/${cachedEntry.name}")
-        }
-        candidates.add("http://${authority.host}:${authority.port}/sd/$remotePath")
-        candidates.add("http://${authority.host}:${authority.port}/$fileName")
-        return candidates.distinct()
     }
 
     @Throws(IOException::class)
@@ -334,196 +156,94 @@ object Client {
         val remotePath = path.remotePath
         val segments = remotePath.split('/').filter { it.isNotEmpty() }
 
-        if (segments.isEmpty() || (segments.size == 1 && CATEGORY_TYPES.containsKey(segments[0].lowercase(Locale.ROOT)))) {
+        if (segments.isEmpty() || (segments.size == 1 && Category.fromName(segments[0]) != Category.UNKNOWN)) {
             return Mai70FileInfo(isDirectory = true, size = 0L, lastModifiedTime = Instant.EPOCH)
         }
 
-        val cacheKey = "${path.authority.host}:${path.authority.port}/${remotePath.removePrefix("/")}"
-        val cachedEntry = fileEntriesCache[cacheKey]
-        if (cachedEntry != null) {
-            return Mai70FileInfo(isDirectory = false, size = cachedEntry.size, lastModifiedTime = Instant.EPOCH)
-        }
+        val categoryName = segments[0]
+        val fileName = segments.getOrNull(1) ?: ""
 
-        // If not in cache, try candidate URLs with HEAD/GET Range
-        val candidateUrls = getFileUrlCandidates(path)
-        for (url in candidateUrls) {
-            try {
-                val request = Request.Builder().url(url).head().build()
-                httpClient.newCall(request).execute().use { response ->
-                    if (response.isSuccessful) {
-                        val size = response.header("Content-Length")?.toLongOrNull() ?: 0L
-                        val lastModifiedHeader = response.header("Last-Modified")
-                        val lastModifiedTime = if (lastModifiedHeader != null) {
-                            try {
-                                DateTimeFormatter.RFC_1123_DATE_TIME.parse(lastModifiedHeader, Instant::from)
-                            } catch (e: Exception) {
-                                Instant.EPOCH
-                            }
-                        } else {
-                            Instant.EPOCH
-                        }
-                        return Mai70FileInfo(isDirectory = false, size = size, lastModifiedTime = lastModifiedTime)
-                    }
-                }
-            } catch (e: Exception) {
-                // Ignore
-            }
+        val mai70Client = getMai70Client(path.authority)
 
+        return kotlinx.coroutines.runBlocking {
             try {
-                val request = Request.Builder().url(url).header("Range", "bytes=0-0").build()
-                httpClient.newCall(request).execute().use { response ->
-                    if (response.isSuccessful || response.code == 416) {
-                        val contentRange = response.header("Content-Range")
-                        val size = if (contentRange != null && contentRange.contains("/")) {
-                            contentRange.substringAfter("/").toLongOrNull() ?: 0L
-                        } else {
-                            response.header("Content-Length")?.toLongOrNull() ?: 0L
-                        }
-                        val lastModifiedHeader = response.header("Last-Modified")
-                        val lastModifiedTime = if (lastModifiedHeader != null) {
-                            try {
-                                DateTimeFormatter.RFC_1123_DATE_TIME.parse(lastModifiedHeader, Instant::from)
-                            } catch (e: Exception) {
-                                Instant.EPOCH
-                            }
-                        } else {
-                            Instant.EPOCH
-                        }
-                        return Mai70FileInfo(isDirectory = false, size = size, lastModifiedTime = lastModifiedTime)
-                    }
-                }
+                val info = mai70Client.getFileInfo(categoryName, fileName)
+                Mai70FileInfo(
+                    isDirectory = false,
+                    size = info.size,
+                    lastModifiedTime = info.lastModifiedTime
+                )
             } catch (e: Exception) {
-                // Ignore
+                Mai70FileInfo(isDirectory = false, size = 0L, lastModifiedTime = Instant.EPOCH)
             }
         }
-
-        // Default fallback rather than crashing with NoSuchFileException
-        return Mai70FileInfo(isDirectory = false, size = 0L, lastModifiedTime = Instant.EPOCH)
     }
 
     @Throws(IOException::class)
     fun deleteFile(path: Path) {
         val authority = path.authority
-        prepareCameraAccess(authority)
-        val token = authenticator.getToken(authority) ?: authority.token
         val segments = path.remotePath.split('/').filter { it.isNotEmpty() }
         if (segments.size < 2) {
             throw IOException("Cannot delete directory $path")
         }
-        val rawCategory = segments[0]
-        val name = segments[1]
-        val type = CATEGORY_TYPES[rawCategory.lowercase(Locale.ROOT)] ?: -1
+        val categoryName = segments[0]
+        val fileName = segments[1]
+        val category = Category.fromName(categoryName)
+        val fileEntry = com.github.trunone.mai70protocol.models.FileEntry(
+            category = category,
+            path = categoryName,
+            name = fileName,
+            size = 0L
+        )
 
-        val cacheKey = "${authority.host}:${authority.port}/${path.remotePath.removePrefix("/")}"
-        val cachedEntry = fileEntriesCache[cacheKey]
+        val mai70Client = getMai70Client(authority)
 
-        val pathCandidates = mutableListOf<String>()
-        if (cachedEntry != null) {
-            pathCandidates.add(cachedEntry.path)
-            pathCandidates.add(cachedEntry.path.removePrefix("/"))
-            pathCandidates.add("sd/${cachedEntry.path.removePrefix("/")}")
-            pathCandidates.add("/${cachedEntry.path.removePrefix("/")}")
-        }
-        pathCandidates.add(rawCategory)
-        pathCandidates.add("sd/$rawCategory")
-        pathCandidates.add("/$rawCategory")
-        pathCandidates.add("/sd/$rawCategory")
-        pathCandidates.add("/mnt/$rawCategory")
-        pathCandidates.add("/mnt/sd/$rawCategory")
-        pathCandidates.add("")
-        val distinctPathCandidates = pathCandidates.distinct()
-
-        var deleted = false
-        for (p in distinctPathCandidates) {
-            val timestamp = System.currentTimeMillis() / 1000L
-            val queryPath = "delete.cgi?"
-            val queryParamsList = mutableListOf<String>()
-            queryParamsList.add("-path=$p&-name=$name&-timestamp=$timestamp")
-            queryParamsList.add("&-path=$p&-name=$name&-timestamp=$timestamp")
-            if (type >= 0) {
-                queryParamsList.add("-path=$p&-name=$name&-type=$type&-timestamp=$timestamp")
-                queryParamsList.add("-type=$type&-name=$name&-timestamp=$timestamp")
+        kotlinx.coroutines.runBlocking {
+            try {
+                mai70Client.delete(fileEntry)
+            } catch (e: Exception) {
+                throw IOException("Failed to delete $path: ${e.message}", e)
             }
-
-            for (queryParams in queryParamsList) {
-                val sign = generateSignKey(queryPath + queryParams, token)
-                val url = "http://${authority.host}:${authority.port}/cgi-bin/$queryPath$queryParams&-signkey=$sign"
-
-                val responseText = executeRawRequest(url)
-                if (responseText != null && isDeleteSuccessResponse(responseText)) {
-                    deleted = true
-                    break
-                }
-            }
-            if (deleted) break
         }
-
-        if (!deleted) {
-            throw IOException("Failed to delete $path from 70mai server")
-        }
-
-        fileEntriesCache.remove(cacheKey)
         LocalWatchService.onEntryDeleted(path as Java8Path)
-    }
-
-    private fun isDeleteSuccessResponse(responseText: String): Boolean {
-        if (responseText.contains("success", ignoreCase = true)) return true
-        return try {
-            val json = JSONObject(responseText)
-            val resultCode = json.optString("ResultCode", json.optString("Result", "-1"))
-            resultCode == "0" || json.optInt("ResultCode", -1) == 0 || json.optInt("Result", -1) == 0 || json.optInt("status", -1) == 0
-        } catch (e: Exception) {
-            false
-        }
     }
 
     @Throws(IOException::class)
     fun retrieveFile(path: Path): InputStream {
         val authority = path.authority
-        prepareCameraAccess(authority)
-        val candidateUrls = getFileUrlCandidates(path)
-        var lastException: IOException? = null
-        for (url in candidateUrls) {
-            var attemptedReauth = false
-            while (true) {
-                val request = Request.Builder().url(url).build()
-                val response = try {
-                    httpClient.newCall(request).execute()
-                } catch (e: IOException) {
-                    lastException = e
-                    break
-                }
-                if (response.code == 403 && !attemptedReauth) {
-                    response.close()
-                    attemptedReauth = true
-                    try {
-                        prepareCameraAccess(authority)
-                    } catch (e: Exception) {
-                        // Ignore
-                    }
-                    continue
-                }
-                if (response.isSuccessful) {
-                    return response.body.byteStream()
-                }
-                val code = response.code
-                val message = response.message
-                response.close()
-                lastException = IOException("HTTP $code: $message")
-                break
+        val segments = path.remotePath.split('/').filter { it.isNotEmpty() }
+        val categoryName = segments.getOrNull(0) ?: ""
+        val fileName = segments.getOrNull(1) ?: ""
+        val category = Category.fromName(categoryName)
+        val fileEntry = com.github.trunone.mai70protocol.models.FileEntry(
+            category = category,
+            path = categoryName,
+            name = fileName,
+            size = 0L
+        )
+
+        val mai70Client = getMai70Client(authority)
+
+        return kotlinx.coroutines.runBlocking {
+            try {
+                mai70Client.openFile(fileEntry)
+            } catch (e: Exception) {
+                throw IOException("Failed to retrieve file $path: ${e.message}", e)
             }
         }
-        throw lastException ?: IOException("Failed to retrieve file $path from candidate URLs: $candidateUrls")
     }
 
     @Throws(IOException::class)
     fun openByteChannel(path: Path, isAppend: Boolean): SeekableByteChannel {
         val authority = path.authority
-        prepareCameraAccess(authority)
-        val cacheKey = "${authority.host}:${authority.port}/${path.remotePath.removePrefix("/")}"
-        val cachedEntry = fileEntriesCache[cacheKey]
-        val fileSize = cachedEntry?.size ?: try { listFile(path).size } catch (e: Exception) { null }
-        val candidateUrls = getFileUrlCandidates(path)
+        val segments = path.remotePath.split('/').filter { it.isNotEmpty() }
+        val categoryName = segments.getOrNull(0) ?: ""
+        val fileName = segments.getOrNull(1) ?: ""
+
+        val mai70Client = getMai70Client(authority)
+        val candidateUrls = mai70Client.getFileUrlCandidates(categoryName, fileName)
+        val fileSize = try { listFile(path).size } catch (e: Exception) { null }
+
         return FileByteChannel(httpClient, authority, candidateUrls, fileSize, isAppend)
     }
 

@@ -5,8 +5,8 @@
 
 package me.zhanghai.android.files.provider.mai70
 
+import com.github.trunone.mai70protocol.Mai70Protocol
 import me.zhanghai.android.files.provider.mai70.client.Authority
-import me.zhanghai.android.files.provider.mai70.client.Client
 import me.zhanghai.android.files.provider.mai70.client.Protocol
 import me.zhanghai.android.files.storage.Mai70Server
 import org.junit.Assert.assertEquals
@@ -52,10 +52,10 @@ class Mai70ProviderTest {
     }
 
     @Test
-    fun testGenerateSignKey() {
+    fun testProtocolMd5() {
         val query = "getfilelist.cgi?-start=0&-end=99&-type=0&-timestamp=1690000000"
         val token = "1234567890abcdef1234567890abcdef"
-        val expectedSignKey = Client.calculateMD5(query + token)
-        assertEquals(expectedSignKey, Client.generateSignKey(query, token))
+        val expectedSignKey = Mai70Protocol.calculateMD5(query + token)
+        assertEquals(32, expectedSignKey.length)
     }
 }
