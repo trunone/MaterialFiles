@@ -33,6 +33,15 @@ object Client {
         .writeTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
         .build()
 
+    private val thumbnailHttpClient: OkHttpClient by lazy {
+        httpClient.newBuilder()
+            .connectTimeout(3, java.util.concurrent.TimeUnit.SECONDS)
+            .readTimeout(5, java.util.concurrent.TimeUnit.SECONDS)
+            .writeTimeout(3, java.util.concurrent.TimeUnit.SECONDS)
+            .callTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
+            .build()
+    }
+
     val CATEGORY_NAMES = mapOf(
         0 to "Normal",
         1 to "Event",
@@ -491,7 +500,7 @@ object Client {
 
         val fileName = mai70Path.remotePath.substringAfterLast("/")
         val fileBase = fileName.substringBeforeLast(".")
-        val rawCategory = segments.firstOrNull() ?: ""
+        val folderPath = remotePath.substringBeforeLast("/", "").removePrefix("/")
 
         val cacheKey = "${authority.host}:${authority.port}/$remotePath"
         val cachedEntry = fileEntriesCache[cacheKey]
@@ -499,7 +508,7 @@ object Client {
         val urlCandidates = mutableListOf<String>()
 
         // 1. Direct CGI thumbnail endpoint
-        val p = cachedEntry?.path?.removePrefix("/") ?: rawCategory
+        val p = cachedEntry?.path?.removePrefix("/") ?: folderPath
         val timestamp = System.currentTimeMillis() / 1000L
         val queryPath = "getthumbnail.cgi?"
         val queryParams = "-path=$p&-name=$fileName&-timestamp=$timestamp"
@@ -507,9 +516,19 @@ object Client {
         urlCandidates.add("http://${authority.host}:${authority.port}/cgi-bin/$queryPath$queryParams&-signkey=$sign")
 
         // 2. Direct sidecar THM and JPG file candidates
-        urlCandidates.add("http://${authority.host}:${authority.port}/$rawCategory/$fileBase.THM")
-        urlCandidates.add("http://${authority.host}:${authority.port}/sd/$rawCategory/$fileBase.THM")
-        urlCandidates.add("http://${authority.host}:${authority.port}/$rawCategory/$fileBase.JPG")
+        val thumbNames = listOf("$fileBase.THM", "$fileBase.JPG", "$fileBase.thm", "$fileBase.jpg")
+        for (thumbName in thumbNames) {
+            if (folderPath.isNotEmpty()) {
+                urlCandidates.add("http://${authority.host}:${authority.port}/$folderPath/$thumbName")
+                urlCandidates.add("http://${authority.host}:${authority.port}/sd/$folderPath/$thumbName")
+            }
+            if (cachedEntry != null) {
+                val entryPath = cachedEntry.path.removePrefix("/")
+                urlCandidates.add("http://${authority.host}:${authority.port}/$entryPath/$thumbName")
+                urlCandidates.add("http://${authority.host}:${authority.port}/sd/$entryPath/$thumbName")
+            }
+            urlCandidates.add("http://${authority.host}:${authority.port}/$thumbName")
+        }
 
         for (url in urlCandidates.distinct()) {
             val bitmap = tryFetchBitmap(authority, url)
@@ -524,32 +543,33 @@ object Client {
         while (true) {
             try {
                 val request = Request.Builder().url(url).build()
-                httpClient.newCall(request).execute().use { response ->
+                val (shouldRetry, bitmap) = thumbnailHttpClient.newCall(request).execute().use { response ->
                     if (response.code == 403 && !attemptedReauth) {
-                        response.close()
-                        attemptedReauth = true
-                        try {
-                            prepareCameraAccess(authority)
-                        } catch (e: Exception) {
-                            // Ignore
-                        }
-                        return@use
+                        return@use true to null
                     }
-                    if (!response.isSuccessful) return null
+                    if (!response.isSuccessful) return@use false to null
                     val contentLength = response.header("Content-Length")?.toLongOrNull() ?: -1L
-                    if (contentLength > 2 * 1024 * 1024) return null
+                    if (contentLength > 2 * 1024 * 1024) return@use false to null
                     val body = response.body
-                    body.byteStream().use { inputStream ->
+                    val decoded = body.byteStream().use { inputStream ->
                         val bitmap = BitmapFactory.decodeStream(inputStream)
                         if (bitmap != null && bitmap.width > 0 && bitmap.height > 0) {
-                            return bitmap
-                        }
+                            bitmap
+                        } else null
                     }
+                    false to decoded
                 }
+                if (shouldRetry) {
+                    attemptedReauth = true
+                    try {
+                        prepareCameraAccess(authority)
+                    } catch (e: Exception) {
+                        // Ignore
+                    }
+                    continue
+                }
+                return bitmap
             } catch (e: Exception) {
-                return null
-            }
-            if (!attemptedReauth) {
                 return null
             }
         }
