@@ -116,6 +116,8 @@ dependencies {
     implementation('com.github.bitfireAT:dav4jvm:02fe1a95e6b86e323bec3784d7d2fe2d4081dde6') {
         exclude group: 'org.ogce', module: 'xpp3'
     }
+    implementation project(':70mai_file_protocaol:core')
+    implementation project(':70mai_file_protocaol:android')
     implementation 'com.github.chrisbanes:PhotoView:2.3.0'
     implementation 'com.github.topjohnwu.libsu:service:5.2.2'
 }
