@@ -8,8 +8,7 @@ package me.zhanghai.android.files.provider.mai70
 import java8.nio.file.FileAlreadyExistsException
 import java8.nio.file.StandardCopyOption
 import me.zhanghai.android.files.provider.common.CopyOptions
-import me.zhanghai.android.files.provider.common.copyTo
-import me.zhanghai.android.files.provider.mai70.client.Client
+import java8.nio.file.attribute.BasicFileAttributes
 import java.io.IOException
 
 internal object Mai70CopyMove {
@@ -18,14 +17,15 @@ internal object Mai70CopyMove {
         if (copyOptions.atomicMove) {
             throw UnsupportedOperationException(StandardCopyOption.ATOMIC_MOVE.toString())
         }
-        val sourceInfo = Client.listFile(source)
-        val targetInfo = try {
-            Client.listFile(target)
-        } catch (e: Exception) {
+        val sourceAttributeView = Mai70FileAttributeView(source, false)
+        val sourceAttributes = sourceAttributeView.readAttributes()
+        val targetAttributes = try {
+            Mai70FileAttributeView(target, false).readAttributes()
+        } catch (_: Exception) {
             null
         }
-        val sourceSize = sourceInfo.size
-        if (targetInfo != null) {
+        val sourceSize = sourceAttributes.size()
+        if (targetAttributes != null) {
             if (source == target) {
                 copyOptions.progressListener?.invoke(sourceSize)
                 return
@@ -33,12 +33,12 @@ internal object Mai70CopyMove {
             if (!copyOptions.replaceExisting) {
                 throw FileAlreadyExistsException(source.toString(), target.toString(), null)
             }
-            Client.deleteFile(target)
+            Mai70FileSystemProvider.delete(target)
         }
-        if (sourceInfo.isDirectory) {
+        if (sourceAttributes.isDirectory) {
             throw UnsupportedOperationException("Cannot copy directory on 70mai server")
         } else {
-            val sourceInputStream = Client.retrieveFile(source)
+            val sourceInputStream = Mai70FileSystemProvider.newInputStream(source)
             try {
                 throw UnsupportedOperationException("Writing to 70mai server is not supported")
             } finally {

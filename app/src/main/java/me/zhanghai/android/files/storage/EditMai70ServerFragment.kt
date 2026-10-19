@@ -14,13 +14,13 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.widget.doAfterTextChanged
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.lifecycleScope
+import com.github.trunone.mai70protocol.models.Authority
 import com.google.android.material.textfield.TextInputEditText
 import kotlinx.coroutines.launch
 import kotlinx.parcelize.Parcelize
 import me.zhanghai.android.files.R
 import me.zhanghai.android.files.databinding.EditMai70ServerFragmentBinding
-import me.zhanghai.android.files.provider.mai70.client.Authority
-import me.zhanghai.android.files.provider.mai70.client.Protocol
+import me.zhanghai.android.files.provider.mai70.toUriAuthority
 import me.zhanghai.android.files.util.ActionState
 import me.zhanghai.android.files.util.ParcelableArgs
 import me.zhanghai.android.files.util.args
@@ -112,7 +112,7 @@ class EditMai70ServerFragment : Fragment() {
             if (server != null) {
                 val authority = server.authority
                 binding.hostEdit.setText(authority.host)
-                if (authority.port != Protocol.MAI70.defaultPort) {
+                if (authority.port != DEFAULT_PORT) {
                     binding.portEdit.setText(authority.port.toString())
                 }
                 binding.tokenEdit.setText(authority.token)
@@ -130,11 +130,12 @@ class EditMai70ServerFragment : Fragment() {
     private fun updateNamePlaceholder() {
         val host = binding.hostEdit.text.toString().takeIfNotEmpty() ?: DEFAULT_HOST
         val port = binding.portEdit.text.toString().takeIfNotEmpty()?.toIntOrNull()
-            ?: Protocol.MAI70.defaultPort
+            ?: DEFAULT_PORT
         val path = binding.pathEdit.text.toString().trim()
         val token = binding.tokenEdit.text.toString().trim()
-        val authority = Authority(Protocol.MAI70, host, port, token)
-        binding.nameLayout.placeholderText = if (path.isNotEmpty()) "$authority/$path" else authority.toString()
+        val authority = Authority(host, port, token)
+        val uriAuthority = authority.toUriAuthority()
+        binding.nameLayout.placeholderText = if (path.isNotEmpty()) "$uriAuthority/$path" else uriAuthority.toString()
     }
 
     private fun saveOrAdd() {
@@ -193,7 +194,7 @@ class EditMai70ServerFragment : Fragment() {
             }
         }
         val port = binding.portEdit.text.toString().takeIfNotEmpty()
-            .let { if (it != null) it.toIntOrNull() else Protocol.MAI70.defaultPort }
+            .let { if (it != null) it.toIntOrNull() else DEFAULT_PORT }
         if (port == null) {
             binding.portLayout.error =
                 getString(R.string.storage_edit_mai70_server_port_error_invalid)
@@ -209,7 +210,7 @@ class EditMai70ServerFragment : Fragment() {
             errorEdit?.requestFocus()
             return null
         }
-        val authority = Authority(Protocol.MAI70, host, port, token)
+        val authority = Authority(host, port, token)
         return Mai70Server(args.server?.id, name, authority, path)
     }
 
@@ -221,5 +222,6 @@ class EditMai70ServerFragment : Fragment() {
 
     companion object {
         private const val DEFAULT_HOST = "192.168.0.1"
+        private const val DEFAULT_PORT = 80
     }
 }

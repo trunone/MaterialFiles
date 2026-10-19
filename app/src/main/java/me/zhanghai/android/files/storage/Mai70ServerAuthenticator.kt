@@ -5,12 +5,12 @@
 
 package me.zhanghai.android.files.storage
 
-import me.zhanghai.android.files.provider.mai70.client.Authenticator
-import me.zhanghai.android.files.provider.mai70.client.Authority
+import com.github.trunone.mai70protocol.TokenStore
+import com.github.trunone.mai70protocol.models.Authority
 import me.zhanghai.android.files.settings.Settings
 import me.zhanghai.android.files.util.valueCompat
 
-object Mai70ServerAuthenticator : Authenticator {
+object Mai70ServerAuthenticator : TokenStore {
     private val transientServers = mutableSetOf<Mai70Server>()
 
     override fun getToken(authority: Authority): String? {
@@ -21,6 +21,8 @@ object Mai70ServerAuthenticator : Authenticator {
         } as Mai70Server?
         return server?.authority?.token
     }
+
+    override fun saveToken(authority: Authority, token: String) {}
 
     fun addTransientServer(server: Mai70Server) {
         synchronized(transientServers) { transientServers += server }

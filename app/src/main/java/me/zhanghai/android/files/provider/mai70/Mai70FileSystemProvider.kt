@@ -5,6 +5,12 @@
 
 package me.zhanghai.android.files.provider.mai70
 
+import com.github.trunone.mai70protocol.Mai70Client
+import com.github.trunone.mai70protocol.TokenStore
+import com.github.trunone.mai70protocol.android.AndroidNetworkTransport
+import com.github.trunone.mai70protocol.models.Authority
+import com.github.trunone.mai70protocol.models.Category
+import com.github.trunone.mai70protocol.models.FileEntry
 import java8.nio.channels.FileChannel
 import java8.nio.channels.SeekableByteChannel
 import java8.nio.file.AccessMode
@@ -25,7 +31,11 @@ import java8.nio.file.attribute.BasicFileAttributes
 import java8.nio.file.attribute.FileAttribute
 import java8.nio.file.attribute.FileAttributeView
 import java8.nio.file.spi.FileSystemProvider
-import me.zhanghai.android.files.provider.common.ByteStringPath
+import kotlinx.coroutines.runBlocking
+import me.zhanghai.android.files.app.application
+import me.zhanghai.android.files.provider.common.AbstractFileByteChannel
+import me.zhanghai.android.files.provider.common.EMPTY
+import me.zhanghai.android.files.provider.common.LocalWatchService
 import me.zhanghai.android.files.provider.common.PathListDirectoryStream
 import me.zhanghai.android.files.provider.common.PathObservable
 import me.zhanghai.android.files.provider.common.PathObservableProvider
@@ -33,18 +43,22 @@ import me.zhanghai.android.files.provider.common.Searchable
 import me.zhanghai.android.files.provider.common.WalkFileTreeSearchable
 import me.zhanghai.android.files.provider.common.WatchServicePathObservable
 import me.zhanghai.android.files.provider.common.decodedPathByteString
+import me.zhanghai.android.files.provider.common.readFully
 import me.zhanghai.android.files.provider.common.toAccessModes
 import me.zhanghai.android.files.provider.common.toByteString
 import me.zhanghai.android.files.provider.common.toCopyOptions
 import me.zhanghai.android.files.provider.common.toLinkOptions
 import me.zhanghai.android.files.provider.common.toOpenOptions
-import me.zhanghai.android.files.provider.mai70.client.Authority
-import me.zhanghai.android.files.provider.mai70.client.Client
-import me.zhanghai.android.files.provider.mai70.client.Protocol
+import me.zhanghai.android.files.storage.Mai70ServerAuthenticator
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
 import java.net.URI
+import java.nio.ByteBuffer
+import java.util.concurrent.ConcurrentHashMap
+import java8.nio.file.Path as Java8Path
 
 object Mai70FileSystemProvider : FileSystemProvider(), PathObservableProvider, Searchable {
     private val HIDDEN_FILE_NAME_PREFIX = ".".toByteString()
@@ -53,7 +67,36 @@ object Mai70FileSystemProvider : FileSystemProvider(), PathObservableProvider, S
 
     private val lock = Any()
 
-    override fun getScheme(): String = Protocol.MAI70.scheme
+    private val clients = ConcurrentHashMap<Authority, Mai70Client>()
+
+    val okHttpClient: OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+        .writeTimeout(20, java.util.concurrent.TimeUnit.SECONDS)
+        .build()
+
+    private val tokenStore = object : TokenStore {
+        override fun getToken(authority: Authority): String? =
+            Mai70ServerAuthenticator.getToken(authority)
+
+        override fun saveToken(authority: Authority, token: String) {}
+    }
+
+    fun getMai70Client(authority: Authority): Mai70Client =
+        clients.getOrPut(authority) {
+            val transport = AndroidNetworkTransport(
+                context = application,
+                defaultCameraIp = authority.host
+            )
+            Mai70Client(
+                transport = transport,
+                tokenStore = tokenStore,
+                host = authority.host,
+                port = authority.port
+            )
+        }
+
+    override fun getScheme(): String = "mai70"
 
     override fun newFileSystem(uri: URI, env: Map<String, *>): FileSystem {
         uri.requireSameScheme()
@@ -96,16 +139,15 @@ object Mai70FileSystemProvider : FileSystemProvider(), PathObservableProvider, S
     }
 
     private fun URI.requireSameScheme() {
-        val scheme = scheme
-        require(scheme in Protocol.SCHEMES) { "URI scheme $scheme must be in ${Protocol.SCHEMES}" }
+        require(scheme.equals("mai70", ignoreCase = true)) { "URI scheme $scheme must be mai70" }
     }
 
     private val URI.mai70Authority: Authority
         get() {
-            val protocol = Protocol.fromScheme(scheme)
-            val port = if (port != -1) port else protocol.defaultPort
+            val defaultPort = 80
+            val uriPort = if (port != -1) port else defaultPort
             val token = userInfo.orEmpty()
-            return Authority(protocol, host, port, token)
+            return Authority(host, uriPort, token)
         }
 
     @Throws(IOException::class)
@@ -122,10 +164,25 @@ object Mai70FileSystemProvider : FileSystemProvider(), PathObservableProvider, S
         if (openOptions.truncateExisting) {
             throw UnsupportedOperationException(StandardOpenOption.TRUNCATE_EXISTING.toString())
         }
-        try {
-            return Client.retrieveFile(file)
-        } catch (e: IOException) {
-            throw e
+
+        val segments = file.remotePath.split('/').filter { it.isNotEmpty() }
+        val categoryName = segments.getOrNull(0) ?: ""
+        val fileName = segments.getOrNull(1) ?: ""
+        val category = Category.fromName(categoryName)
+        val fileEntry = FileEntry(
+            category = category,
+            path = categoryName,
+            name = fileName,
+            size = 0L
+        )
+        val client = getMai70Client(file.authority)
+
+        return runBlocking {
+            try {
+                client.openFile(fileEntry)
+            } catch (e: Exception) {
+                throw IOException("Failed to open input stream for $file: ${e.message}", e)
+            }
         }
     }
 
@@ -164,11 +221,19 @@ object Mai70FileSystemProvider : FileSystemProvider(), PathObservableProvider, S
         if (attributes.isNotEmpty()) {
             throw UnsupportedOperationException(attributes.contentToString())
         }
-        try {
-            return Client.openByteChannel(file, openOptions.append)
-        } catch (e: IOException) {
-            throw e
+
+        val segments = file.remotePath.split('/').filter { it.isNotEmpty() }
+        val categoryName = segments.getOrNull(0) ?: ""
+        val fileName = segments.getOrNull(1) ?: ""
+        val client = getMai70Client(file.authority)
+        val candidateUrls = client.getFileUrlCandidates(categoryName, fileName)
+        val fileSize = try {
+            runBlocking { client.getFileInfo(categoryName, fileName).size }
+        } catch (_: Exception) {
+            null
         }
+
+        return FileByteChannel(okHttpClient, file.authority, candidateUrls, fileSize, openOptions.append)
     }
 
     @Throws(IOException::class)
@@ -177,11 +242,35 @@ object Mai70FileSystemProvider : FileSystemProvider(), PathObservableProvider, S
         filter: DirectoryStream.Filter<in Path>
     ): DirectoryStream<Path> {
         directory as? Mai70Path ?: throw ProviderMismatchException(directory.toString())
-        val paths = try {
-            @Suppress("UNCHECKED_CAST")
-            Client.listDirectory(directory) as List<Path>
-        } catch (e: IOException) {
-            throw e
+        val authority = directory.authority
+        val remotePath = directory.remotePath
+        val segments = remotePath.split('/').filter { it.isNotEmpty() }
+        val client = getMai70Client(authority)
+
+        val paths = runBlocking {
+            if (segments.isEmpty()) {
+                val counts = try {
+                    client.getFileCounts()
+                } catch (e: Exception) {
+                    emptyMap()
+                }
+                val result = mutableListOf<Path>()
+                for (category in Category.entries) {
+                    if (category == Category.UNKNOWN) continue
+                    val count = counts[category] ?: -1
+                    if (count != 0) {
+                        result.add(directory.resolve(category.categoryName))
+                    }
+                }
+                result
+            } else if (segments.size == 1) {
+                val categoryName = segments[0]
+                val category = Category.fromName(categoryName)
+                val fileEntries = client.listFiles(category)
+                fileEntries.map { entry -> directory.resolve(entry.name) }
+            } else {
+                emptyList()
+            }
         }
         return PathListDirectoryStream(paths, filter)
     }
@@ -205,11 +294,29 @@ object Mai70FileSystemProvider : FileSystemProvider(), PathObservableProvider, S
     @Throws(IOException::class)
     override fun delete(path: Path) {
         path as? Mai70Path ?: throw ProviderMismatchException(path.toString())
-        try {
-            Client.deleteFile(path)
-        } catch (e: IOException) {
-            throw e
+        val segments = path.remotePath.split('/').filter { it.isNotEmpty() }
+        if (segments.size < 2) {
+            throw IOException("Cannot delete directory $path")
         }
+        val categoryName = segments[0]
+        val fileName = segments[1]
+        val category = Category.fromName(categoryName)
+        val fileEntry = FileEntry(
+            category = category,
+            path = categoryName,
+            name = fileName,
+            size = 0L
+        )
+        val client = getMai70Client(path.authority)
+
+        runBlocking {
+            try {
+                client.delete(fileEntry)
+            } catch (e: Exception) {
+                throw IOException("Failed to delete $path: ${e.message}", e)
+            }
+        }
+        LocalWatchService.onEntryDeleted(path as Java8Path)
     }
 
     override fun readSymbolicLink(link: Path): Path {
@@ -259,10 +366,18 @@ object Mai70FileSystemProvider : FileSystemProvider(), PathObservableProvider, S
         if (accessModes.execute) {
             throw UnsupportedOperationException(AccessMode.EXECUTE.toString())
         }
-        try {
-            Client.listFile(path)
-        } catch (e: IOException) {
-            throw e
+        val segments = path.remotePath.split('/').filter { it.isNotEmpty() }
+        if (segments.size >= 2) {
+            val categoryName = segments[0]
+            val fileName = segments[1]
+            val client = getMai70Client(path.authority)
+            runBlocking {
+                try {
+                    client.getFileInfo(categoryName, fileName)
+                } catch (e: Exception) {
+                    throw IOException(e)
+                }
+            }
         }
     }
 
@@ -334,5 +449,122 @@ object Mai70FileSystemProvider : FileSystemProvider(), PathObservableProvider, S
     ) {
         directory as? Mai70Path ?: throw ProviderMismatchException(directory.toString())
         WalkFileTreeSearchable.search(directory, query, intervalMillis, listener)
+    }
+
+    private class FileByteChannel(
+        private val client: OkHttpClient,
+        private val authority: Authority,
+        private val candidateUrls: List<String>,
+        private val fileSize: Long?,
+        isAppend: Boolean
+    ) : AbstractFileByteChannel(isAppend) {
+
+        private var activeUrl: String? = candidateUrls.firstOrNull()
+
+        @Throws(IOException::class)
+        override fun onRead(position: Long, size: Int): ByteBuffer {
+            val urlsToTry = mutableListOf<String>()
+            activeUrl?.let { urlsToTry.add(it) }
+            for (u in candidateUrls) {
+                if (u != activeUrl) urlsToTry.add(u)
+            }
+
+            var lastException: IOException? = null
+            for (url in urlsToTry) {
+                var attemptedReauth = false
+                while (true) {
+                    val request = Request.Builder()
+                        .url(url)
+                        .header("Range", "bytes=$position-${position + size - 1}")
+                        .build()
+                    val response = try {
+                        client.newCall(request).execute()
+                    } catch (e: IOException) {
+                        lastException = e
+                        break
+                    }
+
+                    if (response.code == 403 && !attemptedReauth) {
+                        response.close()
+                        attemptedReauth = true
+                        try {
+                            val mai70Client = getMai70Client(authority)
+                            runBlocking { mai70Client.prepareCameraAccess() }
+                        } catch (_: Exception) {}
+                        continue
+                    }
+
+                    if (response.code == 416) {
+                        response.close()
+                        return ByteBuffer::class.EMPTY
+                    }
+
+                    if (!response.isSuccessful) {
+                        val code = response.code
+                        val message = response.message
+                        response.close()
+                        lastException = IOException("HTTP $code: $message")
+                        break
+                    }
+
+                    activeUrl = url
+                    val body = response.body
+                    val destination = ByteBuffer.allocate(size)
+                    val limit = body.byteStream().use { inputStream ->
+                        inputStream.readFully(destination.array(), destination.arrayOffset(), size)
+                    }
+                    destination.limit(limit)
+                    return destination
+                }
+            }
+
+            throw lastException ?: IOException("Failed to read from candidate URLs: $candidateUrls")
+        }
+
+        @Throws(IOException::class)
+        override fun onWrite(position: Long, source: ByteBuffer) {
+            throw UnsupportedOperationException("Writing is not supported")
+        }
+
+        @Throws(IOException::class)
+        override fun onTruncate(size: Long) {
+            throw UnsupportedOperationException("Truncate is not supported")
+        }
+
+        @Throws(IOException::class)
+        override fun onSize(): Long {
+            if (fileSize != null && fileSize >= 0) {
+                return fileSize
+            }
+
+            val urlsToTry = mutableListOf<String>()
+            activeUrl?.let { urlsToTry.add(it) }
+            for (u in candidateUrls) {
+                if (u != activeUrl) urlsToTry.add(u)
+            }
+
+            for (url in urlsToTry) {
+                try {
+                    val request = Request.Builder()
+                        .url(url)
+                        .header("Range", "bytes=0-0")
+                        .build()
+                    client.newCall(request).execute().use { response ->
+                        if (response.isSuccessful || response.code == 416) {
+                            val contentRange = response.header("Content-Range")
+                            if (contentRange != null && contentRange.contains("/")) {
+                                contentRange.substringAfter("/").toLongOrNull()?.let { return it }
+                            }
+                            response.header("Content-Length")?.toLongOrNull()?.let { return it }
+                        }
+                    }
+                } catch (_: Exception) {}
+            }
+
+            return fileSize ?: 0L
+        }
+
+        @Throws(IOException::class)
+        override fun onClose() {}
     }
 }

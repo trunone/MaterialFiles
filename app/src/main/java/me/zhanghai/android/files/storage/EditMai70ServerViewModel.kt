@@ -9,45 +9,40 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runInterruptible
-import me.zhanghai.android.files.provider.common.newDirectoryStream
+import kotlinx.coroutines.withContext
+import me.zhanghai.android.files.provider.mai70.Mai70FileSystemProvider
 import me.zhanghai.android.files.util.ActionState
-import me.zhanghai.android.files.util.isFinished
-import me.zhanghai.android.files.util.isReady
 
 class EditMai70ServerViewModel : ViewModel() {
     private val _connectState = MutableStateFlow<ActionState<Mai70Server, Unit>>(ActionState.Ready())
-    val connectState = _connectState.asStateFlow()
+    val connectState: StateFlow<ActionState<Mai70Server, Unit>> = _connectState
 
     fun connect(server: Mai70Server) {
+        if (_connectState.value !is ActionState.Ready) {
+            return
+        }
+        _connectState.value = ActionState.Running(server)
         viewModelScope.launch {
-            check(_connectState.value.isReady)
-            _connectState.value = ActionState.Running(server)
-            _connectState.value = try {
-                runInterruptible(Dispatchers.IO) {
+            try {
+                withContext(Dispatchers.IO) {
                     Mai70ServerAuthenticator.addTransientServer(server)
                     try {
-                        val path = server.path
-                        path.newDirectoryStream().use { stream ->
-                            stream.toList()
-                        }
+                        val client = Mai70FileSystemProvider.getMai70Client(server.authority)
+                        client.prepareCameraAccess()
                     } finally {
                         Mai70ServerAuthenticator.removeTransientServer(server)
                     }
                 }
-                ActionState.Success(server, Unit)
+                _connectState.value = ActionState.Success(server, Unit)
             } catch (e: Exception) {
-                ActionState.Error(server, e)
+                _connectState.value = ActionState.Error(server, e)
             }
         }
     }
 
     fun finishConnecting() {
-        viewModelScope.launch {
-            check(_connectState.value.isFinished)
-            _connectState.value = ActionState.Ready()
-        }
+        _connectState.value = ActionState.Ready()
     }
 }
