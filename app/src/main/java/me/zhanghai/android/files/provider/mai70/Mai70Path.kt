@@ -7,6 +7,7 @@ package me.zhanghai.android.files.provider.mai70
 
 import android.os.Parcel
 import android.os.Parcelable
+import com.github.trunone.mai70protocol.models.Authority
 import java8.nio.file.FileSystem
 import java8.nio.file.LinkOption
 import java8.nio.file.Path
@@ -18,13 +19,11 @@ import me.zhanghai.android.files.provider.common.ByteString
 import me.zhanghai.android.files.provider.common.ByteStringListPath
 import me.zhanghai.android.files.provider.common.LocalWatchService
 import me.zhanghai.android.files.provider.common.UriAuthority
-import me.zhanghai.android.files.provider.mai70.client.Authority
-import me.zhanghai.android.files.provider.mai70.client.Client
 import me.zhanghai.android.files.util.readParcelable
 import java.io.File
 import java.io.IOException
 
-internal class Mai70Path : ByteStringListPath<Mai70Path>, Client.Path {
+internal class Mai70Path : ByteStringListPath<Mai70Path> {
     private val fileSystem: Mai70FileSystem
 
     constructor(
@@ -51,7 +50,7 @@ internal class Mai70Path : ByteStringListPath<Mai70Path>, Client.Path {
         Mai70Path(fileSystem, absolute, segments)
 
     override val uriScheme: String
-        get() = fileSystem.authority.protocol.scheme
+        get() = "mai70"
 
     override val uriAuthority: UriAuthority
         get() = fileSystem.authority.toUriAuthority()
@@ -84,10 +83,10 @@ internal class Mai70Path : ByteStringListPath<Mai70Path>, Client.Path {
         return watcher.register(this, events, *modifiers)
     }
 
-    override val authority: Authority
+    val authority: Authority
         get() = fileSystem.authority
 
-    override val remotePath: String
+    val remotePath: String
         get() = toString()
 
     private constructor(source: Parcel) : super(source) {

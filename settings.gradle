@@ -1,1 +1,4 @@
 include ':app'
+
+include ':70mai_file_protocaol:core'
+include ':70mai_file_protocaol:android'

@@ -7,6 +7,7 @@ package me.zhanghai.android.files.provider.mai70
 
 import android.os.Parcel
 import android.os.Parcelable
+import com.github.trunone.mai70protocol.models.Authority
 import java8.nio.file.FileStore
 import java8.nio.file.FileSystem
 import java8.nio.file.Path
@@ -19,8 +20,6 @@ import me.zhanghai.android.files.provider.common.ByteStringBuilder
 import me.zhanghai.android.files.provider.common.ByteStringListPathCreator
 import me.zhanghai.android.files.provider.common.LocalWatchService
 import me.zhanghai.android.files.provider.common.toByteString
-import me.zhanghai.android.files.provider.mai70.client.Authority
-import me.zhanghai.android.files.util.readParcelable
 import java.io.IOException
 
 internal class Mai70FileSystem(
@@ -113,7 +112,9 @@ internal class Mai70FileSystem(
     override fun describeContents(): Int = 0
 
     override fun writeToParcel(dest: Parcel, flags: Int) {
-        dest.writeParcelable(authority, flags)
+        dest.writeString(authority.host)
+        dest.writeInt(authority.port)
+        dest.writeString(authority.token)
     }
 
     companion object {
@@ -124,7 +125,10 @@ internal class Mai70FileSystem(
         @JvmField
         val CREATOR = object : Parcelable.Creator<Mai70FileSystem> {
             override fun createFromParcel(source: Parcel): Mai70FileSystem {
-                val authority = source.readParcelable<Authority>()!!
+                val host = source.readString()!!
+                val port = source.readInt()
+                val token = source.readString()!!
+                val authority = Authority(host, port, token)
                 return Mai70FileSystemProvider.getOrNewFileSystem(authority)
             }
 

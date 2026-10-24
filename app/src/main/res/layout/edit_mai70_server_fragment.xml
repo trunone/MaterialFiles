@@ -1,5 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
-
 <!--
   ~ Copyright (c) 2024 Hai Zhang <dreaming.in.code.zh@gmail.com>
   ~ All Rights Reserved.
@@ -9,179 +8,188 @@
     xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:fitsSystemWindows="true">
+    android:layout_height="match_parent">
 
-    <me.zhanghai.android.files.ui.CoordinatorAppBarLayout
+    <com.google.android.material.appbar.AppBarLayout
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:background="?colorAppBarSurface"
-        android:theme="?actionBarTheme"
-        app:liftOnScroll="true"
-        app:liftOnScrollTargetViewId="@id/scrollView">
+        android:layout_height="wrap_content">
 
-        <androidx.appcompat.widget.Toolbar
+        <com.google.android.material.appbar.MaterialToolbar
             android:id="@+id/toolbar"
             android:layout_width="match_parent"
-            android:layout_height="?actionBarSize"
-            app:popupTheme="?actionBarPopupTheme" />
-    </me.zhanghai.android.files.ui.CoordinatorAppBarLayout>
+            android:layout_height="?attr/actionBarSize" />
 
-    <me.zhanghai.android.files.ui.CoordinatorScrollingLinearLayout
+    </com.google.android.material.appbar.AppBarLayout>
+
+    <FrameLayout
         android:layout_width="match_parent"
-        android:layout_height="match_parent">
+        android:layout_height="match_parent"
+        app:layout_behavior="@string/appbar_scrolling_view_behavior">
 
-        <FrameLayout
+        <ScrollView
+            android:id="@+id/scrollView"
             android:layout_width="match_parent"
-            android:layout_height="0dp"
-            android:layout_weight="1">
+            android:layout_height="match_parent"
+            android:fillViewport="true">
 
-            <ProgressBar
-                android:id="@+id/progress"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_gravity="center"
-                android:visibility="gone" />
-
-            <androidx.core.widget.NestedScrollView
-                android:id="@+id/scrollView"
+            <LinearLayout
                 android:layout_width="match_parent"
-                android:layout_height="match_parent"
-                android:scrollbars="vertical"
-                android:scrollIndicators="bottom">
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
 
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:paddingStart="@dimen/screen_edge_margin"
-                    android:paddingEnd="@dimen/screen_edge_margin"
-                    android:paddingTop="@dimen/screen_edge_margin"
-                    android:paddingBottom="@dimen/screen_edge_margin_minus_16dp"
-                    android:animateLayoutChanges="true"
-                    android:orientation="vertical">
+                    android:orientation="vertical"
+                    android:paddingHorizontal="16dp"
+                    android:paddingTop="16dp">
 
-                    <com.google.android.material.textfield.TextInputLayout
-                        android:id="@+id/hostLayout"
+                    <LinearLayout
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:hint="@string/storage_edit_mai70_server_host"
-                        app:errorEnabled="true"
-                        app:expandedHintEnabled="false"
-                        app:placeholderText="@string/storage_edit_mai70_server_host_placeholder">
+                        android:baselineAligned="false"
+                        android:orientation="horizontal">
 
-                        <com.google.android.material.textfield.TextInputEditText
-                            android:id="@+id/hostEdit"
-                            android:layout_width="match_parent"
+                        <com.google.android.material.textfield.TextInputLayout
+                            android:id="@+id/hostLayout"
+                            style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
+                            android:layout_width="0dp"
                             android:layout_height="wrap_content"
-                            android:inputType="textUri">
-                            <requestFocus />
-                        </com.google.android.material.textfield.TextInputEditText>
-                    </com.google.android.material.textfield.TextInputLayout>
+                            android:layout_weight="1"
+                            android:hint="@string/storage_edit_mai70_server_host"
+                            app:placeholderText="@string/storage_edit_mai70_server_host_placeholder">
 
-                    <com.google.android.material.textfield.TextInputLayout
-                        android:id="@+id/portLayout"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:hint="@string/storage_edit_mai70_server_port"
-                        app:errorEnabled="true"
-                        app:expandedHintEnabled="false"
-                        app:placeholderText="@string/storage_edit_mai70_server_port_placeholder">
+                            <com.google.android.material.textfield.TextInputEditText
+                                android:id="@+id/hostEdit"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:inputType="textUri"
+                                android:singleLine="true" />
 
-                        <com.google.android.material.textfield.TextInputEditText
-                            android:id="@+id/portEdit"
-                            android:layout_width="match_parent"
+                        </com.google.android.material.textfield.TextInputLayout>
+
+                        <com.google.android.material.textfield.TextInputLayout
+                            android:id="@+id/portLayout"
+                            style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
+                            android:layout_width="120dp"
                             android:layout_height="wrap_content"
-                            android:inputType="number" />
-                    </com.google.android.material.textfield.TextInputLayout>
+                            android:layout_marginStart="16dp"
+                            android:hint="@string/storage_edit_mai70_server_port"
+                            app:placeholderText="@string/storage_edit_mai70_server_port_placeholder">
+
+                            <com.google.android.material.textfield.TextInputEditText
+                                android:id="@+id/portEdit"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:inputType="number"
+                                android:singleLine="true" />
+
+                        </com.google.android.material.textfield.TextInputLayout>
+
+                    </LinearLayout>
 
                     <com.google.android.material.textfield.TextInputLayout
                         android:id="@+id/tokenLayout"
+                        style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
+                        android:layout_marginTop="16dp"
                         android:hint="@string/storage_edit_mai70_server_token"
-                        app:errorEnabled="true"
-                        app:expandedHintEnabled="false"
                         app:placeholderText="@string/storage_edit_mai70_server_token_placeholder">
 
                         <com.google.android.material.textfield.TextInputEditText
                             android:id="@+id/tokenEdit"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
-                            android:importantForAutofill="no"
-                            android:inputType="text" />
+                            android:inputType="textNoSuggestions"
+                            android:singleLine="true" />
+
                     </com.google.android.material.textfield.TextInputLayout>
 
                     <com.google.android.material.textfield.TextInputLayout
+                        android:id="@+id/pathLayout"
+                        style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
+                        android:layout_marginTop="16dp"
                         android:hint="@string/storage_edit_mai70_server_path"
-                        app:errorEnabled="true"
-                        app:expandedHintEnabled="false"
                         app:placeholderText="@string/storage_edit_mai70_server_path_placeholder">
 
                         <com.google.android.material.textfield.TextInputEditText
                             android:id="@+id/pathEdit"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
-                            android:inputType="textUri" />
+                            android:inputType="textUri"
+                            android:singleLine="true" />
+
                     </com.google.android.material.textfield.TextInputLayout>
 
                     <com.google.android.material.textfield.TextInputLayout
                         android:id="@+id/nameLayout"
+                        style="@style/Widget.MaterialComponents.TextInputLayout.OutlinedBox"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
+                        android:layout_marginTop="16dp"
                         android:hint="@string/storage_edit_mai70_server_name"
-                        app:errorEnabled="true"
-                        app:expandedHintEnabled="false"
                         app:placeholderText="@string/storage_edit_mai70_server_name_placeholder">
 
                         <com.google.android.material.textfield.TextInputEditText
                             android:id="@+id/nameEdit"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
-                            android:importantForAutofill="no"
-                            android:inputType="text" />
+                            android:inputType="textCapWords"
+                            android:singleLine="true" />
+
                     </com.google.android.material.textfield.TextInputLayout>
+
                 </LinearLayout>
-            </androidx.core.widget.NestedScrollView>
-        </FrameLayout>
 
-        <LinearLayout
-            android:layout_width="match_parent"
+                <Space
+                    android:layout_width="match_parent"
+                    android:layout_height="0dp"
+                    android:layout_weight="1" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:gravity="end"
+                    android:orientation="horizontal"
+                    android:padding="8dp">
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/cancelButton"
+                        style="@style/Widget.MaterialComponents.Button.TextButton"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="@android:string/cancel" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/removeOrAddButton"
+                        style="@style/Widget.MaterialComponents.Button.TextButton"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="8dp" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/saveOrConnectAndAddButton"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="8dp" />
+
+                </LinearLayout>
+
+            </LinearLayout>
+
+        </ScrollView>
+
+        <ProgressBar
+            android:id="@+id/progress"
+            style="?android:attr/progressBarStyle"
+            android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_gravity="bottom"
-            android:paddingStart="@dimen/screen_edge_margin_minus_8dp"
-            android:paddingEnd="@dimen/screen_edge_margin_minus_8dp"
-            android:paddingTop="4dp"
-            android:paddingBottom="4dp"
-            android:orientation="horizontal">
+            android:layout_gravity="center"
+            android:visibility="gone" />
 
-            <Button
-                android:id="@+id/removeOrAddButton"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginStart="0dp"
-                android:text="@string/save"
-                style="?buttonBarButtonStyle" />
+    </FrameLayout>
 
-            <Space
-                android:layout_width="0dp"
-                android:layout_height="0dp"
-                android:layout_weight="1" />
-
-            <Button
-                android:id="@+id/cancelButton"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@android:string/cancel"
-                style="?buttonBarButtonStyle" />
-
-            <Button
-                android:id="@+id/saveOrConnectAndAddButton"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="@string/save"
-                style="?buttonBarButtonStyle" />
-        </LinearLayout>
-    </me.zhanghai.android.files.ui.CoordinatorScrollingLinearLayout>
 </androidx.coordinatorlayout.widget.CoordinatorLayout>

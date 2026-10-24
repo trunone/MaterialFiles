@@ -208,6 +208,11 @@
             android:theme="@style/Theme.MaterialFiles" />
 
         <activity
+            android:name="me.zhanghai.android.files.storage.EditMai70ServerActivity"
+            android:label="@string/storage_edit_mai70_server_title_edit"
+            android:theme="@style/Theme.MaterialFiles" />
+
+        <activity
             android:name="me.zhanghai.android.files.storage.EditSftpServerActivity"
             android:label="@string/storage_edit_sftp_server_title_edit"
             android:theme="@style/Theme.MaterialFiles" />
@@ -225,11 +230,6 @@
         <activity
             android:name="me.zhanghai.android.files.storage.EditWebDavServerActivity"
             android:label="@string/storage_edit_webdav_server_title_edit"
-            android:theme="@style/Theme.MaterialFiles" />
-
-        <activity
-            android:name="me.zhanghai.android.files.storage.EditMai70ServerActivity"
-            android:label="@string/storage_edit_mai70_server_title_edit"
             android:theme="@style/Theme.MaterialFiles" />
 
         <activity
